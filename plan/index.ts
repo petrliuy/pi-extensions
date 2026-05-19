@@ -120,6 +120,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let executionMode = false;
 	let activePhase: PhaseName = "normal";
 	let todoItems: TodoItem[] = [];
+	let planStage: "inspect" | "plan" = "inspect";
 
 	pi.registerFlag("plan", {
 		description: "Start in plan mode (read-only exploration)",
@@ -164,6 +165,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		planModeEnabled = !planModeEnabled;
 		executionMode = false;
 		todoItems = [];
+		planStage = "inspect";
 
 		if (planModeEnabled) {
 			await enterPhase(ctx, "plan");
@@ -181,6 +183,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			todos: todoItems,
 			executing: executionMode,
 			phase: activePhase,
+			stage: planStage,
 		});
 	}
 
@@ -219,8 +222,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("context", async (event) => {
-		if (planModeEnabled) return;
-
 		return {
 			messages: event.messages.filter((m) => {
 				const msg = m as AgentMessage & { customType?: string };
@@ -255,18 +256,26 @@ You are in plan mode - a read-only exploration mode for safe code analysis.
 
 Restrictions:
 - You can only use: ${(profile.tools ?? PLAN_MODE_TOOLS).join(", ")}
-- You CANNOT use: edit, write (file modifications are disabled)
-- Bash is restricted to an allowlist of read-only commands
+- You CANNOT modify files, repositories, dependencies, services, or external state.
+- Bash is restricted to an allowlist of read-only commands.
 
-Ask clarifying questions using the questionnaire tool.
-Use brave-search skill via bash for web research.
+Workflow:
+1. Inspect the relevant code using read-only tools.
+2. Identify key ambiguities or decisions that affect implementation direction.
+3. If there ARE critical open questions:
+   - Use the questionnaire tool. Provide 2-4 concrete options plus a "Custom / Other" option.
+   - After receiving answers, incorporate the decisions into your approach.
+4. If everything is clear, skip asking and proceed directly.
 
-Create a detailed numbered plan under a "Plan:" header:
+Once the approach is clear, output a numbered plan under a "Plan:" header.
+Each top-level step must be one numbered line; put supporting details outside the Plan section.
 
 Plan:
 1. First step description
 2. Second step description
 ...
+
+For pure analysis tasks, respond directly with findings, risks, trade-offs, and recommendations (no Plan: section needed).
 
 Do NOT attempt to make changes - just describe what you would do.${phaseContext}`,
 					display: false,
@@ -286,7 +295,8 @@ Remaining steps:
 ${todoList}
 
 Execute each step in order.
-After completing a step, include a [DONE:n] tag in your response.${phaseContext}`,
+After completing a step, include a [DONE:n] tag in your response.
+Only mark [DONE:n] after the step has been fully implemented and you have minimally verified it (e.g., checked the output is correct, the edit matches intent).${phaseContext}`,
 					display: false,
 				},
 			};
@@ -327,6 +337,8 @@ After completing a step, include a [DONE:n] tag in your response.${phaseContext}
 			const extracted = extractTodoItems(getTextContent(lastAssistant));
 			if (extracted.length > 0) {
 				todoItems = extracted;
+				planStage = "plan";
+				persistState();
 			}
 		}
 
@@ -378,13 +390,14 @@ After completing a step, include a [DONE:n] tag in your response.${phaseContext}
 
 		const planModeEntry = entries
 			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "plan-mode")
-			.pop() as { data?: { enabled: boolean; todos?: TodoItem[]; executing?: boolean; phase?: PhaseName } } | undefined;
+			.pop() as { data?: { enabled: boolean; todos?: TodoItem[]; executing?: boolean; phase?: PhaseName; stage?: "inspect" | "plan" } } | undefined;
 
 		if (planModeEntry?.data) {
 			planModeEnabled = planModeEntry.data.enabled ?? planModeEnabled;
 			todoItems = planModeEntry.data.todos ?? todoItems;
 			executionMode = planModeEntry.data.executing ?? executionMode;
 			activePhase = planModeEntry.data.phase ?? (planModeEnabled ? "plan" : executionMode ? "execute" : "normal");
+			planStage = planModeEntry.data.stage ?? "inspect";
 		}
 
 		const isResume = planModeEntry !== undefined;
