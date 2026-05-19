@@ -1,0 +1,21 @@
+{
+    "profiles": {
+        "plan": {
+            "provider": "anthropic",
+            "model": "claude-4-opus",
+            "thinking": "high",
+            "tools": ["read", "bash", "grep", "find", "ls", "questionnaire"],
+            "context": "Use strong reasoning. Focus on architecture, risks, trade-offs, and an executable plan. Do not edit files."
+        },
+        "execute": {
+            "provider": "anthropic",
+            "model": "claude-4-sonnet",
+            "thinking": "low",
+            "tools": ["read", "bash", "edit", "write"],
+            "context": "Implement the approved plan step by step. Prefer minimal diffs. Mark each step done with [DONE:n]."
+        },
+        "normal": {
+            "thinking": "medium"
+        }
+    }
+}
