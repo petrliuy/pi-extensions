@@ -12,6 +12,7 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - `review/` - Focused read-only review command for current changes or a specified scope.
 - `goal/` - Persistent task goal tracking modeled on Codex `/goal`.
 - `loop/` - Scheduled loop tasks that periodically trigger an agent prompt.
+- `init/` - Project instruction initializer modeled on Codex `/init` with Claude Code options.
 
 ## Usage
 
@@ -21,5 +22,6 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - Review current changes with `/review` or a scope with `/review <scope>`.
 - Set a persistent goal with `/goal <objective>`, pause/resume it with `/goal pause` and `/goal resume`, or clear it with `/goal clear`.
 - Start a scheduled loop with natural language like `/loop 每天8点查找我的邮件`, list loops with `/loop list`, pause/resume/remove with `/loop pause|resume|rm <id>`.
+- Initialize project instructions with `/init`, `/init codex`, or Claude variants like `/init claude all`.
 
-See `plan/README.md` for detailed Plan Mode behavior and command allowlist notes, `review/README.md` for review command behavior, `goal/README.md` for goal tracking behavior, and `loop/README.md` for scheduled loop behavior.
+See `plan/README.md` for detailed Plan Mode behavior and command allowlist notes, `review/README.md` for review command behavior, `goal/README.md` for goal tracking behavior, `loop/README.md` for scheduled loop behavior, and `init/README.md` for instruction initialization behavior.
