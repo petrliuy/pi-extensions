@@ -1,13 +1,20 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@mariozechner/pi-coding-agent";
+import { visibleWidth, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
 const BUDDY_PATH = join(homedir(), ".pi", "agent", "buddy.json");
 const STATE_VERSION = 1;
+const MIN_EDITOR_WIDTH = 32;
+const MIN_BUDDY_PANEL_WIDTH = 11;
+const MAX_BUDDY_PANEL_WIDTH = 20;
+const BUDDY_PANEL_GAP = 2;
+const ANIMATION_INTERVAL_MS = 420;
 
 type BuddyRarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
 type BuddyMood = "curious" | "focused" | "pleased" | "sleepy";
+type BuddyArtSet = Record<BuddyMood, string[][]>;
 
 interface BuddyStats {
 	debugging: number;
@@ -34,6 +41,8 @@ interface BuddyState {
 	updatedAt: string;
 	lastSpeech: string;
 }
+
+type UiTheme = ExtensionContext["ui"]["theme"];
 
 const SPECIES = [
 	"Bitling",
@@ -219,27 +228,172 @@ function writeBuddyState(state: BuddyState): void {
 	writeFileSync(BUDDY_PATH, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
-function formatArt(state: BuddyState): string[] {
-	const initials = state.name.slice(0, 2).toUpperCase().padEnd(2, " ");
-	return [
-		" /\\_/\\",
-		`( ${initials})`,
-		" /| |\\",
-	];
+function padRight(value: string, width: number): string {
+	return `${value}${" ".repeat(Math.max(0, width - visibleWidth(value)))}`;
 }
 
-function formatWidget(ctx: ExtensionContext, state: BuddyState): string[] {
-	const lines = [
-		...formatArt(state),
-		`${state.name} the ${state.rarity} ${state.species}`,
-		`level ${state.level} xp ${state.xp} mood ${state.mood}`,
-	];
+const ART_SETS: BuddyArtSet[] = [
+	{
+		curious: [
+			[" .---.", "[o_o]", "/|_|\\", " / \\"],
+			[" .---.", "[O_o]", "/|_|\\", " / \\"],
+			[" .---.", "[o_O]", "/|_|\\", " / \\"],
+		],
+		focused: [
+			[" .---.", "[>_<]", "/|_|\\", " / \\"],
+			[" .---.", "[-_-]", "/|_|\\", " / \\"],
+		],
+		pleased: [
+			[" .---.", "[^_^]", "/|_|\\", " / \\"],
+			[" .---.", "[^o^]", "\\|_|/", " / \\"],
+		],
+		sleepy: [
+			[" .---.", "[-_-]", "/|_|\\", " / \\"],
+			[" .---.", "[-.-]", "/|_|\\", " / \\"],
+		],
+	},
+	{
+		curious: [
+			[" /^^\\", "(o.o)", "<|_|>", " / \\"],
+			[" /^^\\", "(O.o)", "<|_|>", " / \\"],
+			[" /^^\\", "(o.O)", "<|_|>", " / \\"],
+		],
+		focused: [
+			[" /^^\\", "(>.<)", "<|_|>", " / \\"],
+			[" /^^\\", "(-.-)", "<|_|>", " / \\"],
+		],
+		pleased: [
+			[" /^^\\", "(^.^)", "<|_|>", "_/ \\_"],
+			[" /^^\\", "(^o^)", "\\|_|/", "_/ \\_"],
+		],
+		sleepy: [
+			[" /^^\\", "(-.-)", "<|_|>", " / \\"],
+			[" /--\\", "(-_-)", "<|_|>", " / \\"],
+		],
+	},
+	{
+		curious: [
+			["  ___", " /o o\\", "|  ^ |", " \\___/"],
+			["  ___", " /O o\\", "|  ^ |", " \\___/"],
+			["  ___", " /o O\\", "|  ^ |", " \\___/"],
+		],
+		focused: [
+			["  ___", " /> <\\", "|  - |", " \\___/"],
+			["  ___", " /- -\\", "|  - |", " \\___/"],
+		],
+		pleased: [
+			["  ___", " /^ ^\\", "|  v |", " \\___/"],
+			["  ___", " /^ o\\", "|  v |", " \\___/"],
+		],
+		sleepy: [
+			["  ___", " /- -\\", "|  . |", " \\___/"],
+			["  ___", " /_ _\\", "|  . |", " \\___/"],
+		],
+	},
+	{
+		curious: [
+			[" .-^-.", "{o_o}", " /|\\ ", " / \\"],
+			[" .-^-.", "{O_o}", " /|\\ ", " / \\"],
+			[" .-^-.", "{o_O}", " /|\\ ", " / \\"],
+		],
+		focused: [
+			[" .-^-.", "{>_<}", " /|\\ ", " / \\"],
+			[" .-^-.", "{-_-}", " /|\\ ", " / \\"],
+		],
+		pleased: [
+			[" .-^-.", "{^_^}", " \\|/ ", " / \\"],
+			[" .-^-.", "{^o^}", " \\|/ ", "_/ \\_"],
+		],
+		sleepy: [
+			[" .-^-.", "{-_-}", " /|\\ ", " / \\"],
+			[" .---.", "{-.-}", " /|\\ ", " / \\"],
+		],
+	},
+	{
+		curious: [
+			["  /\\ ", " (oo)", "/|==|", " / \\"],
+			["  /\\ ", " (Oo)", "/|==|", " / \\"],
+			["  /\\ ", " (oO)", "/|==|", " / \\"],
+		],
+		focused: [
+			["  /\\ ", " (><)", "/|==|", " / \\"],
+			["  /\\ ", " (--)", "/|==|", " / \\"],
+		],
+		pleased: [
+			["  /\\ ", " (^^)", "\\|==|", " / \\"],
+			["  /\\ ", " (^o)", "\\|==/", "_/ \\"],
+		],
+		sleepy: [
+			["  /\\ ", " (--)", "/|==|", " / \\"],
+			["  -- ", " (-.)", "/|==|", " / \\"],
+		],
+	},
+];
 
-	if (!state.muted) {
-		lines.push(`"${state.lastSpeech}"`);
+function hashText(value: string): number {
+	let hash = 0;
+	for (const char of value) {
+		hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+	}
+	return hash;
+}
+
+function pickArtSet(state: BuddyState): BuddyArtSet {
+	return ART_SETS[hashText(`${state.name}:${state.species}:${state.rarity}`) % ART_SETS.length];
+}
+
+function formatArt(state: BuddyState, frameIndex: number): string[] {
+	const frames = pickArtSet(state)[state.mood];
+	return frames[frameIndex % frames.length];
+}
+
+function getPanelWidth(lines: string[]): number {
+	return Math.min(MAX_BUDDY_PANEL_WIDTH, Math.max(MIN_BUDDY_PANEL_WIDTH, ...lines.map((line) => visibleWidth(line))));
+}
+
+function getArtColor(theme: UiTheme, state: BuddyState): (value: string) => string {
+	if (state.rarity === "legendary" || state.rarity === "epic") return (value) => theme.fg("warning", value);
+	if (state.rarity === "rare" || state.rarity === "uncommon") return (value) => theme.fg("accent", value);
+	return (value) => theme.fg("muted", value);
+}
+
+function formatEditorPanel(theme: UiTheme, state: BuddyState, frameIndex: number): string[] {
+	const color = getArtColor(theme, state);
+	return formatArt(state, frameIndex).map((line) => color(line));
+}
+
+class BuddyEditor extends CustomEditor {
+	constructor(
+		tui: TUI,
+		theme: EditorTheme,
+		keybindings: KeybindingsManager,
+		private readonly getBuddy: () => BuddyState | undefined,
+		private readonly getTheme: () => UiTheme | undefined,
+		private readonly getFrameIndex: () => number,
+	) {
+		super(tui, theme, keybindings);
 	}
 
-	return lines.map((line, index) => (index < 3 ? ctx.ui.theme.fg("accent", line) : line));
+	render(width: number): string[] {
+		const state = this.getBuddy();
+		const theme = this.getTheme();
+		if (!state?.visible || !theme) return super.render(width);
+
+		const panelLines = formatEditorPanel(theme, state, this.getFrameIndex());
+		const panelWidth = getPanelWidth(panelLines);
+		const editorWidth = width - panelWidth - BUDDY_PANEL_GAP;
+		if (editorWidth < MIN_EDITOR_WIDTH) return super.render(width);
+
+		const editorLines = super.render(editorWidth);
+		const lineCount = Math.max(editorLines.length, panelLines.length);
+		const lines: string[] = [];
+
+		for (let index = 0; index < lineCount; index += 1) {
+			lines.push(`${padRight(editorLines[index] ?? "", editorWidth)}${" ".repeat(BUDDY_PANEL_GAP)}${panelLines[index] ?? ""}`);
+		}
+
+		return lines;
+	}
 }
 
 function formatCard(state: BuddyState): string {
@@ -285,6 +439,49 @@ function showHelp(ctx: ExtensionContext): void {
 export default function buddyExtension(pi: ExtensionAPI): void {
 	let buddy: BuddyState | undefined;
 	let loadError: string | undefined;
+	let currentTheme: UiTheme | undefined;
+	let currentTui: TUI | undefined;
+	let animationFrame = 0;
+	let animationTimer: ReturnType<typeof setInterval> | undefined;
+	let buddyEditorInstalled = false;
+	let editorConflictNotified = false;
+
+	function startAnimation(): void {
+		if (animationTimer) return;
+		animationTimer = setInterval(() => {
+			animationFrame += 1;
+			if (buddy?.visible) {
+				currentTui?.requestRender();
+			}
+		}, ANIMATION_INTERVAL_MS);
+	}
+
+	function stopAnimation(): void {
+		if (!animationTimer) return;
+		clearInterval(animationTimer);
+		animationTimer = undefined;
+		currentTui = undefined;
+	}
+
+	function installBuddyEditor(ctx: ExtensionContext): void {
+		currentTheme = ctx.ui.theme;
+		if (buddyEditorInstalled) return;
+
+		if (ctx.ui.getEditorComponent()) {
+			if (!editorConflictNotified) {
+				ctx.ui.notify("Buddy right-side panel is disabled because another extension owns the editor.", "warning");
+				editorConflictNotified = true;
+			}
+			return;
+		}
+
+		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+			currentTui = tui;
+			startAnimation();
+			return new BuddyEditor(tui, theme, keybindings, () => buddy, () => currentTheme, () => animationFrame);
+		});
+		buddyEditorInstalled = true;
+	}
 
 	function persistState(ctx: ExtensionContext): boolean {
 		if (!buddy) return true;
@@ -303,14 +500,10 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
-		if (!buddy || !buddy.visible) {
-			ctx.ui.setStatus("buddy-mode", undefined);
-			ctx.ui.setWidget("buddy-widget", undefined);
-			return;
-		}
-
-		ctx.ui.setStatus("buddy-mode", ctx.ui.theme.fg("accent", `buddy ${buddy.name} L${buddy.level}`));
-		ctx.ui.setWidget("buddy-widget", formatWidget(ctx, buddy));
+		currentTheme = ctx.ui.theme;
+		currentTui?.requestRender();
+		ctx.ui.setStatus("buddy-mode", undefined);
+		ctx.ui.setWidget("buddy-widget", undefined);
 	}
 
 	function ensureBuddy(ctx: ExtensionContext): BuddyState | undefined {
@@ -321,7 +514,6 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 		if (!buddy) {
 			buddy = hatchBuddy();
 			if (!persistState(ctx)) return undefined;
-			ctx.ui.notify(`Buddy hatched: ${buddy.name} the ${buddy.rarity} ${buddy.species}.`, "info");
 		}
 		return buddy;
 	}
@@ -357,7 +549,6 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 				state.updatedAt = now();
 				if (!persistState(ctx)) return;
 				updateStatus(ctx);
-				ctx.ui.notify(`${state.name} gained ${xpGain} xp.`, "info");
 				return;
 			}
 
@@ -369,7 +560,6 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 				state.updatedAt = now();
 				if (!persistState(ctx)) return;
 				updateStatus(ctx);
-				ctx.ui.notify(`Buddy ${state.muted ? "muted" : "unmuted"}.`, "info");
 				return;
 			}
 
@@ -380,7 +570,6 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 				state.updatedAt = now();
 				if (!persistState(ctx)) return;
 				updateStatus(ctx);
-				ctx.ui.notify("Buddy hidden. Run /buddy to show it again.", "info");
 				return;
 			}
 
@@ -395,11 +584,12 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 			state.updatedAt = now();
 			if (!persistState(ctx)) return;
 			updateStatus(ctx);
-			ctx.ui.notify(formatCard(state), "info");
 		},
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		installBuddyEditor(ctx);
+
 		try {
 			buddy = readBuddyState();
 			loadError = undefined;
@@ -410,5 +600,9 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 		}
 
 		updateStatus(ctx);
+	});
+
+	pi.on("session_shutdown", async () => {
+		stopAnimation();
 	});
 }
