@@ -13,6 +13,7 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - `goal/` - Persistent task goal tracking modeled on Codex `/goal`.
 - `loop/` - Scheduled loop tasks that periodically trigger an agent prompt.
 - `init/` - Project instruction initializer modeled on Codex `/init` with Claude Code options.
+- `buddy/` - Local terminal companion modeled on Claude Code `/buddy`.
 
 ## Usage
 
@@ -23,5 +24,6 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - Set a persistent goal with `/goal <objective>`, pause/resume it with `/goal pause` and `/goal resume`, or clear it with `/goal clear`.
 - Start a scheduled loop with natural language like `/loop 每天8点查找我的邮件`, list loops with `/loop list`, pause/resume/remove with `/loop pause|resume|rm <id>`.
 - Initialize project instructions with `/init`, `/init codex`, or Claude variants like `/init claude all`.
+- Hatch or show a local buddy with `/buddy`, pet it with `/buddy pet`, or hide it with `/buddy off`.
 
-See `plan/README.md` for detailed Plan Mode behavior and command allowlist notes, `review/README.md` for review command behavior, `goal/README.md` for goal tracking behavior, `loop/README.md` for scheduled loop behavior, and `init/README.md` for instruction initialization behavior.
+See `plan/README.md` for detailed Plan Mode behavior and command allowlist notes, `review/README.md` for review command behavior, `goal/README.md` for goal tracking behavior, `loop/README.md` for scheduled loop behavior, `init/README.md` for instruction initialization behavior, and `buddy/README.md` for buddy command behavior.
