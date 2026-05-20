@@ -305,6 +305,18 @@ function padRight(value: string, width: number): string {
 	return `${value}${" ".repeat(Math.max(0, width - visibleWidth(value)))}`;
 }
 
+function trimBlankOuterLines(lines: string[]): string[] {
+	const firstContentLine = lines.findIndex((line) => line.trim().length > 0);
+	if (firstContentLine === -1) return [];
+
+	let lastContentLine = lines.length - 1;
+	while (lastContentLine > firstContentLine && lines[lastContentLine]?.trim().length === 0) {
+		lastContentLine -= 1;
+	}
+
+	return lines.slice(firstContentLine, lastContentLine + 1);
+}
+
 function getSpecies(speciesId: BuddySpeciesId): BuddySpecies {
 	return SPECIES_TABLE.find((species) => species.id === speciesId) ?? SPECIES_TABLE[0];
 }
@@ -353,7 +365,7 @@ function getArtColor(theme: UiTheme, state: BuddyState): (value: string) => stri
 
 function formatEditorPanel(theme: UiTheme, state: BuddyState, frameIndex: number): string[] {
 	const color = getArtColor(theme, state);
-	return formatArt(state, frameIndex).map((line) => color(line));
+	return trimBlankOuterLines(formatArt(state, frameIndex)).map((line) => color(line));
 }
 
 class BuddyEditor extends CustomEditor {
@@ -380,10 +392,12 @@ class BuddyEditor extends CustomEditor {
 
 		const editorLines = super.render(editorWidth);
 		const lineCount = Math.max(editorLines.length, panelLines.length);
+		const editorTopPadding = Math.max(0, lineCount - editorLines.length);
 		const lines: string[] = [];
 
 		for (let index = 0; index < lineCount; index += 1) {
-			lines.push(`${padRight(editorLines[index] ?? "", editorWidth)}${" ".repeat(BUDDY_PANEL_GAP)}${panelLines[index] ?? ""}`);
+			const editorLine = index >= editorTopPadding ? editorLines[index - editorTopPadding] : "";
+			lines.push(`${padRight(editorLine ?? "", editorWidth)}${" ".repeat(BUDDY_PANEL_GAP)}${panelLines[index] ?? ""}`);
 		}
 
 		return lines;
