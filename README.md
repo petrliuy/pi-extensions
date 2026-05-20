@@ -14,6 +14,7 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - `loop/` - Scheduled loop tasks that periodically trigger an agent prompt.
 - `init/` - Project instruction initializer modeled on Codex `/init` with Claude Code options.
 - `buddy/` - Local terminal companion modeled on Claude Code `/buddy`.
+- `usage/` - Provider quota and balance queries for selected model providers.
 
 ## Usage
 
@@ -25,5 +26,6 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - Start a scheduled loop with natural language like `/loop 每天8点查找我的邮件`, list loops with `/loop list`, pause/resume/remove with `/loop pause|resume|rm <id>`.
 - Initialize project instructions with `/init`, `/init codex`, or Claude variants like `/init claude all`.
 - Hatch or show a local buddy with `/buddy`, pet it with `/buddy pet`, or hide it with `/buddy off`.
+- Query selected provider quota or balance with `/usage`.
 
-See `plan/README.md` for detailed Plan Mode behavior and command allowlist notes, `review/README.md` for review command behavior, `goal/README.md` for goal tracking behavior, `loop/README.md` for scheduled loop behavior, `init/README.md` for instruction initialization behavior, and `buddy/README.md` for buddy command behavior.
+See `plan/README.md` for detailed Plan Mode behavior and command allowlist notes, `review/README.md` for review command behavior, `goal/README.md` for goal tracking behavior, `loop/README.md` for scheduled loop behavior, `init/README.md` for instruction initialization behavior, `buddy/README.md` for buddy command behavior, and `usage/README.md` for quota query behavior.
