@@ -3,18 +3,27 @@ import { visibleWidth, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import {
+	PERSONA_STATES,
+	SPECIES_IDS,
+	SPECIES_TABLE,
+	type BuddyPersonaState,
+	type BuddySpecies,
+	type BuddySpeciesId,
+} from "./species.js";
 
 const BUDDY_PATH = join(homedir(), ".pi", "agent", "buddy.json");
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
+const LEGACY_STATE_VERSION = 1;
 const MIN_EDITOR_WIDTH = 32;
-const MIN_BUDDY_PANEL_WIDTH = 11;
 const MAX_BUDDY_PANEL_WIDTH = 20;
 const BUDDY_PANEL_GAP = 2;
-const ANIMATION_INTERVAL_MS = 420;
+const BUDDY_RIGHT_PADDING = 2;
+const ANIMATION_INTERVAL_MS = 200;
+const ONE_SHOT_DURATION_MS = 3600;
 
 type BuddyRarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
-type BuddyMood = "curious" | "focused" | "pleased" | "sleepy";
-type BuddyArtSet = Record<BuddyMood, string[][]>;
+type LegacyBuddyMood = "curious" | "focused" | "pleased" | "sleepy";
 
 interface BuddyStats {
 	debugging: number;
@@ -27,13 +36,33 @@ interface BuddyStats {
 interface BuddyState {
 	version: typeof STATE_VERSION;
 	name: string;
+	species: BuddySpeciesId;
+	rarity: BuddyRarity;
+	personality: string;
+	level: number;
+	xp: number;
+	pets: number;
+	personaState: BuddyPersonaState;
+	oneShotState?: BuddyPersonaState;
+	oneShotUntil?: string;
+	muted: boolean;
+	visible: boolean;
+	stats: BuddyStats;
+	createdAt: string;
+	updatedAt: string;
+	lastSpeech: string;
+}
+
+interface LegacyBuddyState {
+	version: typeof LEGACY_STATE_VERSION;
+	name: string;
 	species: string;
 	rarity: BuddyRarity;
 	personality: string;
 	level: number;
 	xp: number;
 	pets: number;
-	mood: BuddyMood;
+	mood: LegacyBuddyMood;
 	muted: boolean;
 	visible: boolean;
 	stats: BuddyStats;
@@ -43,27 +72,6 @@ interface BuddyState {
 }
 
 type UiTheme = ExtensionContext["ui"]["theme"];
-
-const SPECIES = [
-	"Bitling",
-	"Patchsprite",
-	"Stackwhisp",
-	"Lintling",
-	"Nullkin",
-	"Branchlet",
-	"Diffdrift",
-	"Shellspark",
-	"Tokenimp",
-	"Cachelet",
-	"Promptkin",
-	"Mergewhisp",
-	"Cursorling",
-	"Logsprite",
-	"Tracekin",
-	"Bytebloom",
-	"Specsprite",
-	"Bugblink",
-];
 
 const NAMES = [
 	"Nib",
@@ -113,15 +121,16 @@ const PET_SPEECH = [
 ];
 
 const RARITIES: Array<{ rarity: BuddyRarity; weight: number; statBonus: number }> = [
-	{ rarity: "common", weight: 55, statBonus: 0 },
-	{ rarity: "uncommon", weight: 25, statBonus: 1 },
-	{ rarity: "rare", weight: 13, statBonus: 2 },
-	{ rarity: "epic", weight: 6, statBonus: 3 },
-	{ rarity: "legendary", weight: 1, statBonus: 4 },
+	{ rarity: "rare", weight: 75, statBonus: 2 },
+	{ rarity: "epic", weight: 22, statBonus: 3 },
+	{ rarity: "legendary", weight: 3, statBonus: 4 },
 ];
 
 const RARITY_VALUES = new Set<BuddyRarity>(RARITIES.map((item) => item.rarity));
-const MOOD_VALUES = new Set<BuddyMood>(["curious", "focused", "pleased", "sleepy"]);
+const LEGACY_RARITY_VALUES = new Set<BuddyRarity>(["common", "uncommon"]);
+const LEGACY_MOOD_VALUES = new Set<LegacyBuddyMood>(["curious", "focused", "pleased", "sleepy"]);
+const PERSONA_STATE_VALUES = new Set<BuddyPersonaState>(PERSONA_STATES);
+const SPECIES_VALUES = new Set<BuddySpeciesId>(SPECIES_IDS);
 
 function now(): string {
 	return new Date().toISOString();
@@ -149,13 +158,6 @@ function getLevel(xp: number): number {
 	return Math.max(1, Math.floor(xp / 100) + 1);
 }
 
-function getMood(pets: number): BuddyMood {
-	if (pets === 0) return "curious";
-	if (pets % 7 === 0) return "sleepy";
-	if (pets % 3 === 0) return "focused";
-	return "pleased";
-}
-
 function hatchBuddy(): BuddyState {
 	const rarity = pickRarity();
 	const createdAt = now();
@@ -163,13 +165,13 @@ function hatchBuddy(): BuddyState {
 	return {
 		version: STATE_VERSION,
 		name: pick(NAMES),
-		species: pick(SPECIES),
+		species: pick(SPECIES_TABLE).id,
 		rarity: rarity.rarity,
 		personality: pick(PERSONALITIES),
 		level: getLevel(xp),
 		xp,
 		pets: 0,
-		mood: "curious",
+		personaState: "idle",
 		muted: false,
 		visible: true,
 		stats: {
@@ -185,27 +187,9 @@ function hatchBuddy(): BuddyState {
 	};
 }
 
-function isBuddyState(value: unknown): value is BuddyState {
-	if (!value || typeof value !== "object") return false;
-	const state = value as Partial<BuddyState>;
-	const stats = state.stats as Partial<BuddyStats> | undefined;
+function hasStats(value: Partial<BuddyState> | Partial<LegacyBuddyState>): boolean {
+	const stats = value.stats as Partial<BuddyStats> | undefined;
 	return (
-		state.version === STATE_VERSION &&
-		typeof state.name === "string" &&
-		typeof state.species === "string" &&
-		typeof state.rarity === "string" &&
-		RARITY_VALUES.has(state.rarity as BuddyRarity) &&
-		typeof state.personality === "string" &&
-		typeof state.level === "number" &&
-		typeof state.xp === "number" &&
-		typeof state.pets === "number" &&
-		typeof state.mood === "string" &&
-		MOOD_VALUES.has(state.mood as BuddyMood) &&
-		typeof state.muted === "boolean" &&
-		typeof state.visible === "boolean" &&
-		typeof state.createdAt === "string" &&
-		typeof state.updatedAt === "string" &&
-		typeof state.lastSpeech === "string" &&
 		typeof stats?.debugging === "number" &&
 		typeof stats?.patience === "number" &&
 		typeof stats?.chaos === "number" &&
@@ -214,13 +198,102 @@ function isBuddyState(value: unknown): value is BuddyState {
 	);
 }
 
+function isLegacyBuddyState(value: unknown): value is LegacyBuddyState {
+	if (!value || typeof value !== "object") return false;
+	const state = value as Partial<LegacyBuddyState>;
+	const rarity = state.rarity as BuddyRarity;
+	return (
+		state.version === LEGACY_STATE_VERSION &&
+		typeof state.name === "string" &&
+		typeof state.species === "string" &&
+		typeof state.rarity === "string" &&
+		(RARITY_VALUES.has(rarity) || LEGACY_RARITY_VALUES.has(rarity)) &&
+		typeof state.personality === "string" &&
+		typeof state.level === "number" &&
+		typeof state.xp === "number" &&
+		typeof state.pets === "number" &&
+		typeof state.mood === "string" &&
+		LEGACY_MOOD_VALUES.has(state.mood as LegacyBuddyMood) &&
+		typeof state.muted === "boolean" &&
+		typeof state.visible === "boolean" &&
+		typeof state.createdAt === "string" &&
+		typeof state.updatedAt === "string" &&
+		typeof state.lastSpeech === "string" &&
+		hasStats(state)
+	);
+}
+
+function isBuddyState(value: unknown): value is BuddyState {
+	if (!value || typeof value !== "object") return false;
+	const state = value as Partial<BuddyState>;
+	const rarity = state.rarity as BuddyRarity;
+	return (
+		state.version === STATE_VERSION &&
+		typeof state.name === "string" &&
+		typeof state.species === "string" &&
+		SPECIES_VALUES.has(state.species as BuddySpeciesId) &&
+		typeof state.rarity === "string" &&
+		RARITY_VALUES.has(rarity) &&
+		typeof state.personality === "string" &&
+		typeof state.level === "number" &&
+		typeof state.xp === "number" &&
+		typeof state.pets === "number" &&
+		typeof state.personaState === "string" &&
+		PERSONA_STATE_VALUES.has(state.personaState as BuddyPersonaState) &&
+		(state.oneShotState === undefined || PERSONA_STATE_VALUES.has(state.oneShotState)) &&
+		(state.oneShotUntil === undefined || typeof state.oneShotUntil === "string") &&
+		typeof state.muted === "boolean" &&
+		typeof state.visible === "boolean" &&
+		typeof state.createdAt === "string" &&
+		typeof state.updatedAt === "string" &&
+		typeof state.lastSpeech === "string" &&
+		hasStats(state)
+	);
+}
+
+function normalizeRarity(rarity: BuddyRarity): BuddyRarity {
+	if (rarity === "common" || rarity === "uncommon") return "rare";
+	return rarity;
+}
+
+function normalizeSpecies(species: string): BuddySpeciesId {
+	const normalized = species.trim().toLowerCase() as BuddySpeciesId;
+	return SPECIES_VALUES.has(normalized) ? normalized : "mushroom";
+}
+
+function migrateMood(mood: LegacyBuddyMood): BuddyPersonaState {
+	if (mood === "focused") return "busy";
+	if (mood === "pleased") return "heart";
+	if (mood === "sleepy") return "sleep";
+	return "idle";
+}
+
+function migrateLegacyBuddyState(state: LegacyBuddyState): BuddyState {
+	return {
+		version: STATE_VERSION,
+		name: state.name,
+		species: normalizeSpecies(state.species),
+		rarity: normalizeRarity(state.rarity),
+		personality: state.personality,
+		level: state.level,
+		xp: state.xp,
+		pets: state.pets,
+		personaState: migrateMood(state.mood),
+		muted: state.muted,
+		visible: state.visible,
+		stats: state.stats,
+		createdAt: state.createdAt,
+		updatedAt: now(),
+		lastSpeech: state.lastSpeech,
+	};
+}
+
 function readBuddyState(): BuddyState | undefined {
 	if (!existsSync(BUDDY_PATH)) return undefined;
 	const parsed = JSON.parse(readFileSync(BUDDY_PATH, "utf8")) as unknown;
-	if (!isBuddyState(parsed)) {
-		throw new Error(`Invalid buddy state schema in ${BUDDY_PATH}`);
-	}
-	return parsed;
+	if (isBuddyState(parsed)) return parsed;
+	if (isLegacyBuddyState(parsed)) return migrateLegacyBuddyState(parsed);
+	throw new Error(`Invalid buddy state schema in ${BUDDY_PATH}`);
 }
 
 function writeBuddyState(state: BuddyState): void {
@@ -232,128 +305,49 @@ function padRight(value: string, width: number): string {
 	return `${value}${" ".repeat(Math.max(0, width - visibleWidth(value)))}`;
 }
 
-const ART_SETS: BuddyArtSet[] = [
-	{
-		curious: [
-			[" .---.", "[o_o]", "/|_|\\", " / \\"],
-			[" .---.", "[O_o]", "/|_|\\", " / \\"],
-			[" .---.", "[o_O]", "/|_|\\", " / \\"],
-		],
-		focused: [
-			[" .---.", "[>_<]", "/|_|\\", " / \\"],
-			[" .---.", "[-_-]", "/|_|\\", " / \\"],
-		],
-		pleased: [
-			[" .---.", "[^_^]", "/|_|\\", " / \\"],
-			[" .---.", "[^o^]", "\\|_|/", " / \\"],
-		],
-		sleepy: [
-			[" .---.", "[-_-]", "/|_|\\", " / \\"],
-			[" .---.", "[-.-]", "/|_|\\", " / \\"],
-		],
-	},
-	{
-		curious: [
-			[" /^^\\", "(o.o)", "<|_|>", " / \\"],
-			[" /^^\\", "(O.o)", "<|_|>", " / \\"],
-			[" /^^\\", "(o.O)", "<|_|>", " / \\"],
-		],
-		focused: [
-			[" /^^\\", "(>.<)", "<|_|>", " / \\"],
-			[" /^^\\", "(-.-)", "<|_|>", " / \\"],
-		],
-		pleased: [
-			[" /^^\\", "(^.^)", "<|_|>", "_/ \\_"],
-			[" /^^\\", "(^o^)", "\\|_|/", "_/ \\_"],
-		],
-		sleepy: [
-			[" /^^\\", "(-.-)", "<|_|>", " / \\"],
-			[" /--\\", "(-_-)", "<|_|>", " / \\"],
-		],
-	},
-	{
-		curious: [
-			["  ___", " /o o\\", "|  ^ |", " \\___/"],
-			["  ___", " /O o\\", "|  ^ |", " \\___/"],
-			["  ___", " /o O\\", "|  ^ |", " \\___/"],
-		],
-		focused: [
-			["  ___", " /> <\\", "|  - |", " \\___/"],
-			["  ___", " /- -\\", "|  - |", " \\___/"],
-		],
-		pleased: [
-			["  ___", " /^ ^\\", "|  v |", " \\___/"],
-			["  ___", " /^ o\\", "|  v |", " \\___/"],
-		],
-		sleepy: [
-			["  ___", " /- -\\", "|  . |", " \\___/"],
-			["  ___", " /_ _\\", "|  . |", " \\___/"],
-		],
-	},
-	{
-		curious: [
-			[" .-^-.", "{o_o}", " /|\\ ", " / \\"],
-			[" .-^-.", "{O_o}", " /|\\ ", " / \\"],
-			[" .-^-.", "{o_O}", " /|\\ ", " / \\"],
-		],
-		focused: [
-			[" .-^-.", "{>_<}", " /|\\ ", " / \\"],
-			[" .-^-.", "{-_-}", " /|\\ ", " / \\"],
-		],
-		pleased: [
-			[" .-^-.", "{^_^}", " \\|/ ", " / \\"],
-			[" .-^-.", "{^o^}", " \\|/ ", "_/ \\_"],
-		],
-		sleepy: [
-			[" .-^-.", "{-_-}", " /|\\ ", " / \\"],
-			[" .---.", "{-.-}", " /|\\ ", " / \\"],
-		],
-	},
-	{
-		curious: [
-			["  /\\ ", " (oo)", "/|==|", " / \\"],
-			["  /\\ ", " (Oo)", "/|==|", " / \\"],
-			["  /\\ ", " (oO)", "/|==|", " / \\"],
-		],
-		focused: [
-			["  /\\ ", " (><)", "/|==|", " / \\"],
-			["  /\\ ", " (--)", "/|==|", " / \\"],
-		],
-		pleased: [
-			["  /\\ ", " (^^)", "\\|==|", " / \\"],
-			["  /\\ ", " (^o)", "\\|==/", "_/ \\"],
-		],
-		sleepy: [
-			["  /\\ ", " (--)", "/|==|", " / \\"],
-			["  -- ", " (-.)", "/|==|", " / \\"],
-		],
-	},
-];
-
-function hashText(value: string): number {
-	let hash = 0;
-	for (const char of value) {
-		hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-	}
-	return hash;
+function getSpecies(speciesId: BuddySpeciesId): BuddySpecies {
+	return SPECIES_TABLE.find((species) => species.id === speciesId) ?? SPECIES_TABLE[0];
 }
 
-function pickArtSet(state: BuddyState): BuddyArtSet {
-	return ART_SETS[hashText(`${state.name}:${state.species}:${state.rarity}`) % ART_SETS.length];
+function getSpeciesIndex(speciesId: BuddySpeciesId): number {
+	return Math.max(0, SPECIES_TABLE.findIndex((species) => species.id === speciesId));
+}
+
+function getActivePersonaState(state: BuddyState): BuddyPersonaState {
+	if (state.oneShotState && state.oneShotUntil && Date.parse(state.oneShotUntil) > Date.now()) {
+		return state.oneShotState;
+	}
+	return state.personaState;
+}
+
+function triggerOneShot(state: BuddyState, personaState: BuddyPersonaState): void {
+	state.oneShotState = personaState;
+	state.oneShotUntil = new Date(Date.now() + ONE_SHOT_DURATION_MS).toISOString();
+}
+
+function setPersonaState(state: BuddyState, personaState: BuddyPersonaState): void {
+	state.personaState = personaState;
+	state.oneShotState = undefined;
+	state.oneShotUntil = undefined;
 }
 
 function formatArt(state: BuddyState, frameIndex: number): string[] {
-	const frames = pickArtSet(state)[state.mood];
-	return frames[frameIndex % frames.length];
+	const species = getSpecies(state.species);
+	const animation = species.states[getActivePersonaState(state)];
+	const sequenceIndex = Math.floor(frameIndex / animation.beatDivisor) % animation.sequence.length;
+	const poseIndex = animation.sequence[sequenceIndex] ?? 0;
+	return animation.poses[poseIndex] ?? animation.poses[0];
 }
 
 function getPanelWidth(lines: string[]): number {
-	return Math.min(MAX_BUDDY_PANEL_WIDTH, Math.max(MIN_BUDDY_PANEL_WIDTH, ...lines.map((line) => visibleWidth(line))));
+	const artWidth = Math.max(...lines.map((line) => visibleWidth(line)));
+	return Math.min(MAX_BUDDY_PANEL_WIDTH, artWidth + BUDDY_RIGHT_PADDING);
 }
 
 function getArtColor(theme: UiTheme, state: BuddyState): (value: string) => string {
-	if (state.rarity === "legendary" || state.rarity === "epic") return (value) => theme.fg("warning", value);
-	if (state.rarity === "rare" || state.rarity === "uncommon") return (value) => theme.fg("accent", value);
+	if (state.rarity === "legendary") return (value) => theme.fg("warning", value);
+	if (state.rarity === "epic") return (value) => theme.fg("accent", value);
+	if (state.rarity === "rare") return (value) => theme.fg("success", value);
 	return (value) => theme.fg("muted", value);
 }
 
@@ -397,12 +391,13 @@ class BuddyEditor extends CustomEditor {
 }
 
 function formatCard(state: BuddyState): string {
+	const species = getSpecies(state.species);
 	return [
-		`${state.name} the ${state.rarity} ${state.species}`,
+		`${state.name} the ${state.rarity} ${species.name}`,
 		`Personality: ${state.personality}`,
 		`Level: ${state.level}`,
 		`XP: ${state.xp}`,
-		`Mood: ${state.mood}`,
+		`State: ${getActivePersonaState(state)}`,
 		`Pets: ${state.pets}`,
 		`Muted: ${state.muted ? "yes" : "no"}`,
 		`Visible: ${state.visible ? "yes" : "no"}`,
@@ -416,8 +411,12 @@ function formatCard(state: BuddyState): string {
 		"",
 		`Created: ${state.createdAt}`,
 		`Updated: ${state.updatedAt}`,
-		`State: ${BUDDY_PATH}`,
+		`State file: ${BUDDY_PATH}`,
 	].join("\n");
+}
+
+function formatSpeciesList(): string {
+	return SPECIES_TABLE.map((species) => species.id).join(", ");
 }
 
 function showHelp(ctx: ExtensionContext): void {
@@ -427,6 +426,16 @@ function showHelp(ctx: ExtensionContext): void {
 			"/buddy",
 			"/buddy card",
 			"/buddy pet",
+			"/buddy idle",
+			"/buddy sleep",
+			"/buddy busy",
+			"/buddy attention",
+			"/buddy celebrate",
+			"/buddy dizzy",
+			"/buddy heart",
+			"/buddy next",
+			"/buddy species",
+			"/buddy species <name>",
 			"/buddy mute",
 			"/buddy unmute",
 			"/buddy off",
@@ -521,7 +530,8 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("buddy", {
 		description: "Show, hatch, pet, mute, or hide a local terminal buddy",
 		handler: async (args, ctx) => {
-			const command = args.trim().toLowerCase();
+			const parts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+			const command = parts[0] ?? "";
 
 			if (command === "help") {
 				showHelp(ctx);
@@ -539,12 +549,60 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 			if (command === "pet") {
 				const state = ensureBuddy(ctx);
 				if (!state) return;
+				const previousLevel = state.level;
 				const xpGain = 12 + Math.floor(Math.random() * 9);
 				state.pets += 1;
 				state.xp += xpGain;
 				state.level = getLevel(state.xp);
-				state.mood = getMood(state.pets);
+				triggerOneShot(state, state.level > previousLevel ? "celebrate" : "heart");
 				state.lastSpeech = pick(PET_SPEECH);
+				state.visible = true;
+				state.updatedAt = now();
+				if (!persistState(ctx)) return;
+				updateStatus(ctx);
+				return;
+			}
+
+			if (PERSONA_STATE_VALUES.has(command as BuddyPersonaState)) {
+				const state = ensureBuddy(ctx);
+				if (!state) return;
+				setPersonaState(state, command as BuddyPersonaState);
+				state.visible = true;
+				state.updatedAt = now();
+				if (!persistState(ctx)) return;
+				updateStatus(ctx);
+				return;
+			}
+
+			if (command === "next") {
+				const state = ensureBuddy(ctx);
+				if (!state) return;
+				const nextIndex = (getSpeciesIndex(state.species) + 1) % SPECIES_TABLE.length;
+				state.species = SPECIES_TABLE[nextIndex].id;
+				setPersonaState(state, "idle");
+				state.visible = true;
+				state.updatedAt = now();
+				if (!persistState(ctx)) return;
+				updateStatus(ctx);
+				return;
+			}
+
+			if (command === "species") {
+				const state = ensureBuddy(ctx);
+				if (!state) return;
+				const speciesName = parts[1];
+				if (!speciesName) {
+					ctx.ui.notify(`Species: ${formatSpeciesList()}`, "info");
+					updateStatus(ctx);
+					return;
+				}
+				const speciesId = speciesName as BuddySpeciesId;
+				if (!SPECIES_VALUES.has(speciesId)) {
+					ctx.ui.notify(`Unknown species: ${speciesName}\nSpecies: ${formatSpeciesList()}`, "warning");
+					return;
+				}
+				state.species = speciesId;
+				setPersonaState(state, "idle");
 				state.visible = true;
 				state.updatedAt = now();
 				if (!persistState(ctx)) return;
@@ -574,13 +632,14 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 			}
 
 			if (command) {
-				ctx.ui.notify("Usage: /buddy [card|pet|mute|unmute|off|help]", "warning");
+				ctx.ui.notify("Usage: /buddy [card|pet|idle|sleep|busy|attention|celebrate|dizzy|heart|next|species|mute|unmute|off|help]", "warning");
 				return;
 			}
 
 			const state = ensureBuddy(ctx);
 			if (!state) return;
 			state.visible = true;
+			setPersonaState(state, "idle");
 			state.updatedAt = now();
 			if (!persistState(ctx)) return;
 			updateStatus(ctx);
@@ -592,6 +651,9 @@ export default function buddyExtension(pi: ExtensionAPI): void {
 
 		try {
 			buddy = readBuddyState();
+			if (buddy) {
+				writeBuddyState(buddy);
+			}
 			loadError = undefined;
 		} catch (error) {
 			buddy = undefined;
