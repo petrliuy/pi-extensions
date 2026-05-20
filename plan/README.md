@@ -6,7 +6,7 @@ Read-only exploration mode for safe code analysis, with phase-based model routin
 
 - **Read-only tools**: Restricts available tools to read, bash, grep, find, ls, question
 - **Bash allowlist**: Only read-only bash commands are allowed
-- **Plan extraction**: Extracts numbered steps from `Plan:` sections
+- **Plan extraction**: Extracts numbered steps from `<proposed_plan>` blocks, with legacy `Plan:` fallback
 - **Progress tracking**: Widget shows completion status during execution
 - **[DONE:n] markers**: Explicit step completion tracking
 - **Session persistence**: State survives session resume
@@ -71,16 +71,25 @@ User-provided fields in `plan.json` are shallow-merged over these defaults. Only
 
 1. Enable plan mode with `/plan` or `--plan` flag
 2. Ask the agent to analyze code and create a plan
-3. The agent should output a numbered plan under a `Plan:` header:
+3. The agent should output a numbered plan inside a `<proposed_plan>` block:
 
-```
-Plan:
+```md
+<proposed_plan>
+# Short Title
+
+## Summary
+Brief summary.
+
+## Key Changes
 1. First step description
 2. Second step description
-3. Third step description
+
+## Test Plan
+1. First verification step
+</proposed_plan>
 ```
 
-4. Choose "Execute the plan" when prompted
+4. Choose "Execute the plan" when prompted. Pure analysis responses do not show the execution prompt.
 5. During execution, the agent marks steps complete with `[DONE:n]` tags
 6. Progress widget shows completion status
 
@@ -104,7 +113,9 @@ If the configured `provider`/`model` pair is not found in the registry, a warnin
 ### Plan Mode (Read-Only)
 - Only read-only tools available
 - Bash commands filtered through allowlist
-- Agent creates a plan without making changes
+- Requests to implement, edit, continue, or apply changes are treated as planning requests
+- Agent creates a `<proposed_plan>` without making changes
+- Blocked write commands explicitly instruct the agent to stop retrying write-capable shell commands and produce a plan instead
 
 ### Execution Mode
 - Full tool access restored

@@ -216,7 +216,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		if (!isSafeCommand(command)) {
 			return {
 				block: true,
-				reason: `Plan mode: command blocked (not allowlisted). Use /plan to disable plan mode first.\nCommand: ${command}`,
+				reason: `Plan mode: command blocked (not allowlisted). Do not try another write command such as perl, python, sed -i, cp, mv, tee, or shell redirection. Stop using tools and output a <proposed_plan> for the requested change, or ask a critical question with questionnaire.\nCommand: ${command}`,
 			};
 		}
 	});
@@ -258,6 +258,8 @@ Restrictions:
 - You can only use: ${(profile.tools ?? PLAN_MODE_TOOLS).join(", ")}
 - You CANNOT modify files, repositories, dependencies, services, or external state.
 - Bash is restricted to an allowlist of read-only commands.
+- If the user asks you to implement, edit, execute, continue, or apply changes while plan mode is active, treat that as a request to plan the execution. Do not attempt to execute it.
+- Do not try write-capable shell commands such as perl -pi, python scripts that write files, sed -i, cp, mv, tee, or shell redirection.
 
 Workflow:
 1. Inspect the relevant code using read-only tools.
@@ -267,15 +269,24 @@ Workflow:
    - After receiving answers, incorporate the decisions into your approach.
 4. If everything is clear, skip asking and proceed directly.
 
-Once the approach is clear, output a numbered plan under a "Plan:" header.
-Each top-level step must be one numbered line; put supporting details outside the Plan section.
+Once the approach is clear, output a numbered plan inside a <proposed_plan> block.
+Each top-level step must be one numbered line. Put supporting details outside numbered steps or in short sections.
 
-Plan:
+<proposed_plan>
+# Short Title
+
+## Summary
+Brief summary.
+
+## Key Changes
 1. First step description
 2. Second step description
-...
 
-For pure analysis tasks, respond directly with findings, risks, trade-offs, and recommendations (no Plan: section needed).
+## Test Plan
+1. First verification step
+</proposed_plan>
+
+For pure analysis tasks, respond directly with findings, risks, trade-offs, and recommendations, without a <proposed_plan> block.
 
 Do NOT attempt to make changes - just describe what you would do.${phaseContext}`,
 					display: false,
@@ -342,20 +353,20 @@ Only mark [DONE:n] after the step has been fully implemented and you have minima
 			}
 		}
 
-		if (todoItems.length > 0) {
-			const todoListText = todoItems.map((t, i) => `${i + 1}. ☐ ${t.text}`).join("\n");
-			pi.sendMessage(
-				{
-					customType: "plan-todo-list",
-					content: `**Plan Steps (${todoItems.length}):**\n\n${todoListText}`,
-					display: true,
-				},
-				{ triggerTurn: false },
-			);
-		}
+		if (todoItems.length === 0) return;
+
+		const todoListText = todoItems.map((t, i) => `${i + 1}. ☐ ${t.text}`).join("\n");
+		pi.sendMessage(
+			{
+				customType: "plan-todo-list",
+				content: `**Plan Steps (${todoItems.length}):**\n\n${todoListText}`,
+				display: true,
+			},
+			{ triggerTurn: false },
+		);
 
 		const choice = await ctx.ui.select("Plan mode - what next?", [
-			todoItems.length > 0 ? "Execute the plan (track progress)" : "Execute the plan",
+			"Execute the plan (track progress)",
 			"Stay in plan mode",
 			"Refine the plan",
 		]);
@@ -366,8 +377,7 @@ Only mark [DONE:n] after the step has been fully implemented and you have minima
 			await enterPhase(ctx, "execute");
 			persistState();
 
-			const execMessage =
-				todoItems.length > 0 ? `Execute the plan. Start with: ${todoItems[0].text}` : "Execute the plan you just created.";
+			const execMessage = `Execute the plan. Start with: ${todoItems[0].text}`;
 			pi.sendMessage(
 				{ customType: "plan-mode-execute", content: execMessage, display: true },
 				{ triggerTurn: true },
