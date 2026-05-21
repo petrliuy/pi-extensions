@@ -4,9 +4,14 @@ Read-only exploration mode for safe code analysis, with phase-based model routin
 
 ## Features
 
-- **Read-only tools**: Restricts available tools to read, bash, grep, find, ls, question
+- **Read-only tools**: Restricts available tools to read, bash, grep, find, ls, questionnaire, and propose_plan
 - **Bash allowlist**: Only read-only bash commands are allowed
-- **Plan extraction**: Extracts numbered steps from `<proposed_plan>` blocks, with legacy `Plan:` fallback
+- **Write-tool hard block**: Blocks edit, write, and apply_patch tool calls while Plan Mode is active
+- **Structured plan approval**: Uses the `propose_plan` tool to submit executable JSON-shaped plans and trigger the harness approval UI
+- **Structured task progress**: Uses `plan_task_update` during execution; `[DONE:n]` remains a legacy fallback
+- **Plan extraction fallback**: Extracts numbered steps from `<proposed_plan>` blocks, with legacy `Plan:` fallback
+- **Blocked-command handoff**: Captures blocked write commands as structured todos so execution can be approved explicitly
+- **Auto-continuation**: Continues approved execution while structured task progress is reported, up to a safety limit
 - **Progress tracking**: Widget shows completion status during execution
 - **[DONE:n] markers**: Explicit step completion tracking
 - **Session persistence**: State survives session resume
@@ -15,6 +20,7 @@ Read-only exploration mode for safe code analysis, with phase-based model routin
 ## Commands
 
 - `/plan` - Toggle plan mode
+- `/execute` - Confirm and execute the current plan or captured blocked command
 - `/todos` - Show current plan progress
 - `Alt+I` - Toggle plan mode (shortcut)
 - `--plan` - Start Pi in plan mode
@@ -41,8 +47,8 @@ If `plan.json` does not exist or a phase key is missing, the following defaults 
 
 | Phase    | Thinking   | Tools                                                       | Context                                            |
 |----------|------------|-------------------------------------------------------------|----------------------------------------------------|
-| `plan`   | `high`     | `read`, `bash`, `grep`, `find`, `ls`, `questionnaire`       | Prompts strong reasoning, focus on analysis, no edits |
-| `execute`| `medium`   | `read`, `bash`, `edit`, `write`                             | Implementation-focused reasoning, minimal diffs    |
+| `plan`   | `high`     | `read`, `bash`, `grep`, `find`, `ls`, `questionnaire`, `propose_plan` | Prompts strong reasoning, focus on analysis, no edits |
+| `execute`| `medium`   | `read`, `bash`, `edit`, `write`, `plan_task_update`          | Implementation-focused reasoning, minimal diffs    |
 | `normal` | `medium`   | `read`, `bash`, `edit`, `write`                             | (none)                                             |
 
 User-provided fields in `plan.json` are shallow-merged over these defaults. Only the fields you specify need to be included.
@@ -71,27 +77,14 @@ User-provided fields in `plan.json` are shallow-merged over these defaults. Only
 
 1. Enable plan mode with `/plan` or `--plan` flag
 2. Ask the agent to analyze code and create a plan
-3. The agent should output a numbered plan inside a `<proposed_plan>` block:
+3. For implementation, fix, or refactor requests, the agent should call `propose_plan` with `title`, `summary`, ordered `steps`, optional `verification`, optional `risks`, and optional `files`.
 
-```md
-<proposed_plan>
-# Short Title
+4. Choose `Execute with auto edits`, `Execute with manual review`, `Keep planning`, or `Edit plan` when prompted. `/execute` opens the same confirmation UI for the current plan or captured blocked command.
+5. During execution, the agent updates task state with `plan_task_update` (`pending`, `in_progress`, `completed`, or `blocked`).
+6. If a turn reports task progress and more steps remain, Plan Mode automatically sends a continuation follow-up. It pauses if no task progress appears, a task is blocked, or after 8 automatic continuations.
+7. Progress widget shows completion status.
 
-## Summary
-Brief summary.
-
-## Key Changes
-1. First step description
-2. Second step description
-
-## Test Plan
-1. First verification step
-</proposed_plan>
-```
-
-4. Choose "Execute the plan" when prompted. Pure analysis responses do not show the execution prompt.
-5. During execution, the agent marks steps complete with `[DONE:n]` tags
-6. Progress widget shows completion status
+The execution prompt appears when the agent calls `propose_plan`, when the last assistant response contains extractable legacy plan steps, or when Plan Mode captures a blocked write command. Confirming execution sends a follow-up handoff turn so approval made from the UI starts reliably. Plain yes/no chat replies are not treated as approval. If the agent emits malformed plan markup, Plan Mode asks for one format-repair turn and then warns the user if extraction still fails.
 
 ## How It Works
 
@@ -110,23 +103,32 @@ When a phase is entered (`togglePlanMode`, executing plan, session resume), the 
 
 If the configured `provider`/`model` pair is not found in the registry, a warning notification is shown and the current model is kept.
 
+Plan phase tools are always constrained to the built-in read-only allowlist, and `propose_plan` is always enabled so structured approval remains available. Execute phase always includes `plan_task_update` so progress remains structured. If `~/.pi/agent/plan.json` configures write-capable tools such as `edit` or `write` for the `plan` phase, they are ignored and a warning is shown.
+
 ### Plan Mode (Read-Only)
 - Only read-only tools available
+- `edit`, `write`, and `apply_patch` tool calls are hard-blocked even if they are accidentally exposed
 - Bash commands filtered through allowlist
 - Requests to implement, edit, continue, or apply changes are treated as planning requests
-- Agent creates a `<proposed_plan>` without making changes
+- Agent calls `propose_plan` without making changes
+- Legacy `<proposed_plan>` / `Plan:` text extraction remains as a fallback
 - Blocked write commands explicitly instruct the agent to stop retrying write-capable shell commands and produce a plan instead
+- `/execute` provides an explicit user-controlled handoff into execution mode
+- `/plan` cannot toggle modes while execution is active
 
 ### Execution Mode
 - Full tool access restored
 - Agent executes steps in order
-- `[DONE:n]` markers track completion
+- `plan_task_update` tracks task state by stable task id
+- `[DONE:n]` markers are accepted only as a compatibility fallback
+- Automatic continuation sends the next execution follow-up while steps remain and progress is being marked
+- `/execute` resumes an active incomplete execution instead of only reporting that execution is already active
 - Widget shows progress
 - When all steps are marked done, a completion message is sent and mode returns to `normal`
 
 ### Session Restore
 
-State (enabled mode, todo items, executing flag, active phase) is persisted to session entries. On `session_start`:
+State (enabled mode, todo items, executing flag, active phase, pending plan, execution choice, and continuation count) is persisted to session entries. On `session_start`:
 
 1. The last `plan-mode` entry is loaded
 2. If resuming an active execution, the extension scans messages since the last `plan-mode-execute` entry for `[DONE:n]` markers and updates todo completion, so progress is not lost across restarts

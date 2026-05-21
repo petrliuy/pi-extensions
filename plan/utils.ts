@@ -38,6 +38,8 @@ const DESTRUCTIVE_PATTERNS = [
 	/\bsystemctl\s+(start|stop|restart|enable|disable)/i,
 	/\bservice\s+\S+\s+(start|stop|restart)/i,
 	/\b(vim?|nano|emacs|code|subl)\b/i,
+	/\bsed\s+(-[^\s]*i|--in-place)\b/i,
+	/\bperl\s+-[^\s]*pi\b/i,
 ];
 
 // Safe read-only commands allowed in plan mode
@@ -94,16 +96,68 @@ const SAFE_PATTERNS = [
 	/^\s*eza\b/,
 ];
 
+const SAFE_PIPE_COMMANDS = new Set([
+	"awk",
+	"bat",
+	"cat",
+	"cut",
+	"diff",
+	"eza",
+	"fd",
+	"file",
+	"find",
+	"grep",
+	"head",
+	"jq",
+	"less",
+	"ls",
+	"more",
+	"printf",
+	"pwd",
+	"rg",
+	"sort",
+	"tail",
+	"tree",
+	"uniq",
+	"wc",
+]);
+
+function isSafeSegment(segment: string): boolean {
+	const trimmed = segment.trim();
+	if (!trimmed) return true;
+	if (/^cd\s+/.test(trimmed)) return true;
+	return SAFE_PATTERNS.some((p) => p.test(trimmed));
+}
+
+function isReadOnlyShellPipeline(command: string): boolean {
+	const segments = command
+		.split(/&&|\|\|?/)
+		.map((segment) => segment.trim())
+		.filter(Boolean);
+	if (segments.length <= 1) return false;
+
+	return segments.every((segment) => {
+		if (isSafeSegment(segment)) return true;
+		const commandName = segment.match(/^\s*(?:env\s+)?([A-Za-z0-9_.-]+)/)?.[1];
+		return commandName !== undefined && SAFE_PIPE_COMMANDS.has(commandName);
+	});
+}
+
 export function isSafeCommand(command: string): boolean {
 	const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(command));
 	const isSafe = SAFE_PATTERNS.some((p) => p.test(command));
-	return !isDestructive && isSafe;
+	return !isDestructive && (isSafe || isReadOnlyShellPipeline(command));
 }
 
 export interface TodoItem {
+	id: string;
 	step: number;
 	text: string;
 	completed: boolean;
+	status: "pending" | "in_progress" | "completed" | "blocked";
+	message?: string;
+	source?: "plan" | "blocked_command";
+	command?: string;
 }
 
 export function cleanStepText(text: string): string {
@@ -143,7 +197,8 @@ export function extractTodoItems(message: string): TodoItem[] {
 		if (text.length > 5 && !text.startsWith("`") && !text.startsWith("/") && !text.startsWith("-")) {
 			const cleaned = cleanStepText(text);
 			if (cleaned.length > 3) {
-				items.push({ step: items.length + 1, text: cleaned, completed: false });
+				const step = items.length + 1;
+				items.push({ id: `legacy-${step}`, step, text: cleaned, completed: false, status: "pending", source: "plan" });
 			}
 		}
 	}
@@ -161,9 +216,14 @@ export function extractDoneSteps(message: string): number[] {
 
 export function markCompletedSteps(text: string, items: TodoItem[]): number {
 	const doneSteps = extractDoneSteps(text);
+	let completed = 0;
 	for (const step of doneSteps) {
 		const item = items.find((t) => t.step === step);
-		if (item) item.completed = true;
+		if (item && !item.completed) {
+			item.completed = true;
+			item.status = "completed";
+			completed++;
+		}
 	}
-	return doneSteps.length;
+	return completed;
 }
