@@ -21,6 +21,9 @@ const BUDDY_PANEL_GAP = 2;
 const BUDDY_RIGHT_PADDING = 2;
 const ANIMATION_INTERVAL_MS = 200;
 const ONE_SHOT_DURATION_MS = 3600;
+const ANSI_FG_PURPLE = "\x1b[35m";
+const ANSI_FG_GOLD = "\x1b[33m";
+const ANSI_FG_RESET = "\x1b[39m";
 
 type BuddyRarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
 type LegacyBuddyMood = "curious" | "focused" | "pleased" | "sleepy";
@@ -345,9 +348,9 @@ function getPanelWidth(lines: string[]): number {
 }
 
 function getArtColor(theme: UiTheme, state: BuddyState): (value: string) => string {
-	if (state.rarity === "legendary") return (value) => theme.fg("warning", value);
+	if (state.rarity === "legendary") return (value) => `${ANSI_FG_GOLD}${value}${ANSI_FG_RESET}`;
 	if (state.rarity === "epic") return (value) => theme.fg("accent", value);
-	if (state.rarity === "rare") return (value) => theme.fg("success", value);
+	if (state.rarity === "rare") return (value) => `${ANSI_FG_PURPLE}${value}${ANSI_FG_RESET}`;
 	return (value) => theme.fg("muted", value);
 }
 

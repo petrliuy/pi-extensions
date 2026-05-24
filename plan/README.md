@@ -11,7 +11,7 @@ Read-only exploration mode for safe code analysis, with phase-based model routin
 - **Structured task progress**: Uses `plan_task_update` during execution; `[DONE:n]` remains a legacy fallback
 - **Plan extraction fallback**: Extracts numbered steps from `<proposed_plan>` blocks, with legacy `Plan:` fallback
 - **Blocked-command handoff**: Captures blocked write commands as structured todos so execution can be approved explicitly
-- **Auto-continuation**: Continues approved execution while structured task progress is reported, up to a safety limit
+- **Auto-continuation**: Continues approved execution while structured task progress is reported, with two no-progress retry turns and a safety limit
 - **Progress tracking**: Widget shows completion status during execution
 - **[DONE:n] markers**: Explicit step completion tracking
 - **Session persistence**: State survives session resume
@@ -81,7 +81,7 @@ User-provided fields in `plan.json` are shallow-merged over these defaults. Only
 
 4. Choose `Execute with auto edits`, `Execute with manual review`, `Keep planning`, or `Edit plan` when prompted. `/execute` opens the same confirmation UI for the current plan or captured blocked command.
 5. During execution, the agent updates task state with `plan_task_update` (`pending`, `in_progress`, `completed`, or `blocked`).
-6. If a turn reports task progress and more steps remain, Plan Mode automatically sends a continuation follow-up. It pauses if no task progress appears, a task is blocked, or after 8 automatic continuations.
+6. If more steps remain, Plan Mode automatically sends a continuation follow-up. If a turn forgets to report task progress, Plan Mode retries twice with a stronger progress reminder before pausing.
 7. Progress widget shows completion status.
 
 The execution prompt appears when the agent calls `propose_plan`, when the last assistant response contains extractable legacy plan steps, or when Plan Mode captures a blocked write command. Confirming execution sends a follow-up handoff turn so approval made from the UI starts reliably. Plain yes/no chat replies are not treated as approval. If the agent emits malformed plan markup, Plan Mode asks for one format-repair turn and then warns the user if extraction still fails.
@@ -122,13 +122,15 @@ Plan phase tools are always constrained to the built-in read-only allowlist, and
 - `plan_task_update` tracks task state by stable task id
 - `[DONE:n]` markers are accepted only as a compatibility fallback
 - Automatic continuation sends the next execution follow-up while steps remain and progress is being marked
+- No-progress turns get two automatic retries before Plan Mode pauses and asks for `/execute`
+- Tasks marked `blocked` still pause immediately
 - `/execute` resumes an active incomplete execution instead of only reporting that execution is already active
 - Widget shows progress
 - When all steps are marked done, a completion message is sent and mode returns to `normal`
 
 ### Session Restore
 
-State (enabled mode, todo items, executing flag, active phase, pending plan, execution choice, and continuation count) is persisted to session entries. On `session_start`:
+State (enabled mode, todo items, executing flag, active phase, pending plan, execution choice, continuation count, and no-progress continuation count) is persisted to session entries. On `session_start`:
 
 1. The last `plan-mode` entry is loaded
 2. If resuming an active execution, the extension scans messages since the last `plan-mode-execute` entry for `[DONE:n]` markers and updates todo completion, so progress is not lost across restarts

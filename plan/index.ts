@@ -24,6 +24,7 @@ const EXECUTE_MODE_TOOLS = [...NORMAL_MODE_TOOLS, PLAN_TASK_UPDATE_TOOL];
 const PLAN_MODE_TOOL_ALLOWLIST = new Set(PLAN_MODE_TOOLS);
 const PLAN_MODE_WRITE_TOOLS = new Set(['edit', 'write', 'apply_patch']);
 const MAX_AUTO_CONTINUATIONS = 8;
+const MAX_NO_PROGRESS_CONTINUATIONS = 2;
 
 const CONFIG_PATH = join(homedir(), '.pi', 'agent', 'plan.json');
 
@@ -363,6 +364,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
     let formatRepairAttempted = false;
     let suppressNextPlanPrompt = false;
     let continuationCount = 0;
+    let noProgressContinuationCount = 0;
     let currentAgentProgressCount = 0;
     let executionChoice: ExecutionModeChoice = 'auto';
 
@@ -436,6 +438,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
         formatRepairAttempted = false;
         suppressNextPlanPrompt = false;
         continuationCount = 0;
+        noProgressContinuationCount = 0;
         currentAgentProgressCount = 0;
         executionChoice = 'auto';
 
@@ -462,6 +465,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
             pendingPlan,
             formatRepairAttempted,
             continuationCount,
+            noProgressContinuationCount,
             executionChoice,
         });
     }
@@ -496,6 +500,19 @@ export default function planModeExtension(pi: ExtensionAPI): void {
                   : `Execute the approved plan.\n\nMode: ${modeText}\n\nStart with: ${firstTodo ? formatTodoLine(firstTodo) : 'the first task'}`;
         pi.sendMessage(
             { customType: 'plan-mode-execute', content: execMessage, display: true },
+            { triggerTurn: true, deliverAs: 'followUp' },
+        );
+    }
+
+    function sendNoProgressContinuation(firstTodo: TodoItem | undefined): void {
+        const remaining = remainingTodos();
+        const remainingText = remaining.map(formatTodoLine).join('\n');
+        pi.sendMessage(
+            {
+                customType: 'plan-mode-execute',
+                content: `Continue executing the approved plan.\n\nThe previous turn ended without structured task progress. Before stopping this turn, call plan_task_update for the task you work on. If no task can move forward, mark the task blocked with a short reason.\n\nRemaining tasks:\n${remainingText}\n\nStart with: ${firstTodo ? formatTodoLine(firstTodo) : 'the first remaining task'}`,
+                display: true,
+            },
             { triggerTurn: true, deliverAs: 'followUp' },
         );
     }
@@ -589,6 +606,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
             executionMode = todoItems.length > 0;
             executionChoice = choice.includes('manual') ? 'manual_review' : 'auto';
             continuationCount = 0;
+            noProgressContinuationCount = 0;
             currentAgentProgressCount = 0;
             pendingBlockedCommand = undefined;
             pendingPlan = undefined;
@@ -643,6 +661,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
                 return;
             }
             continuationCount = 0;
+            noProgressContinuationCount = 0;
             currentAgentProgressCount = 0;
             persistState();
             sendExecutionHandoff(remaining[0], 'continue');
@@ -686,6 +705,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
         }
         if (changed) {
             currentAgentProgressCount += 1;
+            noProgressContinuationCount = 0;
         }
         return task;
     }
@@ -931,6 +951,7 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
         const completed = markCompletedSteps(text, todoItems);
         if (completed > 0) {
             currentAgentProgressCount += completed;
+            noProgressContinuationCount = 0;
             updateStatus(ctx);
         }
         persistState();
@@ -948,6 +969,7 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
                 todoItems = [];
                 pendingPlan = undefined;
                 continuationCount = 0;
+                noProgressContinuationCount = 0;
                 currentAgentProgressCount = 0;
                 await enterPhase(ctx, 'normal');
                 persistState();
@@ -962,13 +984,22 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
                     'warning',
                 );
                 currentAgentProgressCount = 0;
+                noProgressContinuationCount = 0;
                 persistState();
                 return;
             }
 
             if (currentAgentProgressCount === 0) {
+                if (noProgressContinuationCount < MAX_NO_PROGRESS_CONTINUATIONS) {
+                    noProgressContinuationCount += 1;
+                    currentAgentProgressCount = 0;
+                    persistState();
+                    sendNoProgressContinuation(remaining[0]);
+                    return;
+                }
+
                 ctx.ui.notify(
-                    `Plan execution paused: no task progress was reported. Remaining: ${remaining.length}. Run /execute to resume.`,
+                    `Plan execution paused: no task progress was reported after ${MAX_NO_PROGRESS_CONTINUATIONS} retries. Remaining: ${remaining.length}. Run /execute to resume.`,
                     'warning',
                 );
                 currentAgentProgressCount = 0;
@@ -982,11 +1013,13 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
                     'warning',
                 );
                 currentAgentProgressCount = 0;
+                noProgressContinuationCount = 0;
                 persistState();
                 return;
             }
 
             continuationCount += 1;
+            noProgressContinuationCount = 0;
             currentAgentProgressCount = 0;
             persistState();
             sendExecutionHandoff(remaining[0], 'continue');
@@ -1071,6 +1104,7 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
                       pendingPlan?: PlanProposal;
                       formatRepairAttempted?: boolean;
                       continuationCount?: number;
+                      noProgressContinuationCount?: number;
                       executionChoice?: ExecutionModeChoice;
                   };
               }
@@ -1086,6 +1120,7 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
             pendingPlan = normalizeStoredPlan(planModeEntry.data.pendingPlan);
             formatRepairAttempted = planModeEntry.data.formatRepairAttempted ?? false;
             continuationCount = planModeEntry.data.continuationCount ?? 0;
+            noProgressContinuationCount = planModeEntry.data.noProgressContinuationCount ?? 0;
             executionChoice = planModeEntry.data.executionChoice ?? 'auto';
         }
 
