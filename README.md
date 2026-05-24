@@ -15,6 +15,7 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - `init/` - Project instruction initializer modeled on Codex `/init` with Claude Code options.
 - `buddy/` - Local terminal companion modeled on Claude Code `/buddy`.
 - `usage/` - Provider quota and balance queries for selected model providers.
+- `undo/` - Restore files changed by the last Pi edit/write tool turn.
 
 ## Usage
 
@@ -27,5 +28,6 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - Initialize project instructions with `/init`, `/init codex`, or Claude variants like `/init claude all`.
 - Hatch or show a local buddy with `/buddy`, pet it with `/buddy pet`, or hide it with `/buddy off`.
 - Query selected provider quota or balance with `/usage`.
+- Restore the last Pi edit/write changes with `/undo` or inspect the current snapshot with `/undo show`.
 
-See `plan/README.md` for detailed Plan Mode behavior and command allowlist notes, `review/README.md` for review command behavior, `goal/README.md` for goal tracking behavior, `loop/README.md` for scheduled loop behavior, `init/README.md` for instruction initialization behavior, `buddy/README.md` for buddy command behavior, and `usage/README.md` for quota query behavior.
+See `plan/README.md` for detailed Plan Mode behavior and command allowlist notes, `review/README.md` for review command behavior, `goal/README.md` for goal tracking behavior, `loop/README.md` for scheduled loop behavior, `init/README.md` for instruction initialization behavior, `buddy/README.md` for buddy command behavior, `usage/README.md` for quota query behavior, and `undo/README.md` for undo behavior.
