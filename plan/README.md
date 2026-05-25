@@ -20,7 +20,6 @@ Read-only exploration mode for safe code analysis, with phase-based model routin
 ## Commands
 
 - `/plan` - Toggle plan mode
-- `/execute` - Confirm and execute the current plan or captured blocked command
 - `/todos` - Show current plan progress
 - `Alt+I` - Toggle plan mode (shortcut)
 - `--plan` - Start Pi in plan mode
@@ -79,9 +78,9 @@ User-provided fields in `plan.json` are shallow-merged over these defaults. Only
 2. Ask the agent to analyze code and create a plan
 3. For implementation, fix, or refactor requests, the agent should call `propose_plan` with `title`, `summary`, ordered `steps`, optional `verification`, optional `risks`, and optional `files`.
 
-4. Choose `Execute with auto edits`, `Execute with manual review`, `Keep planning`, or `Edit plan` when prompted. `/execute` opens the same confirmation UI for the current plan or captured blocked command.
+4. Choose `Execute with auto edits`, `Execute with manual review`, `Keep planning`, or `Edit plan` when prompted. Execution starts automatically after approval.
 5. During execution, the agent updates task state with `plan_task_update` (`pending`, `in_progress`, `completed`, or `blocked`).
-6. If more steps remain, Plan Mode automatically sends a continuation follow-up. If a turn forgets to report task progress, Plan Mode retries twice with a stronger progress reminder before pausing.
+6. If more steps remain, Plan Mode automatically sends a continuation follow-up. If a turn forgets to report task progress, Plan Mode retries twice with a stronger progress reminder before stopping execution tracking.
 7. Progress widget shows completion status.
 
 The execution prompt appears when the agent calls `propose_plan`, when the last assistant response contains extractable legacy plan steps, or when Plan Mode captures a blocked write command. Confirming execution sends a follow-up handoff turn so approval made from the UI starts reliably. Plain yes/no chat replies are not treated as approval. If the agent emits malformed plan markup, Plan Mode asks for one format-repair turn and then warns the user if extraction still fails.
@@ -113,8 +112,8 @@ Plan phase tools are always constrained to the built-in read-only allowlist, and
 - Agent calls `propose_plan` without making changes
 - Legacy `<proposed_plan>` / `Plan:` text extraction remains as a fallback
 - Blocked write commands explicitly instruct the agent to stop retrying write-capable shell commands and produce a plan instead
-- `/execute` provides an explicit user-controlled handoff into execution mode
-- `/plan` cannot toggle modes while execution is active
+- The approval UI provides the user-controlled handoff into execution mode
+- `/plan` clears stale execution state and starts a fresh planning session
 
 ### Execution Mode
 - Full tool access restored
@@ -122,9 +121,8 @@ Plan phase tools are always constrained to the built-in read-only allowlist, and
 - `plan_task_update` tracks task state by stable task id
 - `[DONE:n]` markers are accepted only as a compatibility fallback
 - Automatic continuation sends the next execution follow-up while steps remain and progress is being marked
-- No-progress turns get two automatic retries before Plan Mode pauses and asks for `/execute`
-- Tasks marked `blocked` still pause immediately
-- `/execute` resumes an active incomplete execution instead of only reporting that execution is already active
+- No-progress turns get two automatic retries before Plan Mode stops execution tracking
+- Tasks marked `blocked` still stop execution immediately
 - Widget shows progress
 - When all steps are marked done, a completion message is sent and mode returns to `normal`
 

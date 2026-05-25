@@ -420,18 +420,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
         updateStatus(ctx);
     }
 
-    async function togglePlanMode(ctx: ExtensionContext): Promise<void> {
-        if (executionMode) {
-            ctx.ui.notify(
-                'Plan mode cannot be toggled while execution is active. Use /execute to resume or wait for completion.',
-                'warning',
-            );
-            return;
-        }
-
-        planModeEnabled = !planModeEnabled;
+    function resetPlanState(clearTodos: boolean): void {
         executionMode = false;
-        todoItems = [];
+        if (clearTodos) {
+            todoItems = [];
+        }
         planStage = 'inspect';
         pendingBlockedCommand = undefined;
         pendingPlan = undefined;
@@ -441,6 +434,33 @@ export default function planModeExtension(pi: ExtensionAPI): void {
         noProgressContinuationCount = 0;
         currentAgentProgressCount = 0;
         executionChoice = 'auto';
+    }
+
+    async function finishExecution(ctx: ExtensionContext, completed: boolean): Promise<void> {
+        if (completed && todoItems.length > 0) {
+            const completedList = todoItems.map((t) => `~~${t.text}~~`).join('\n');
+            pi.sendMessage(
+                { customType: 'plan-complete', content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
+                { triggerTurn: false },
+            );
+        }
+
+        planModeEnabled = false;
+        resetPlanState(completed);
+        await enterPhase(ctx, 'normal');
+        persistState();
+    }
+
+    async function togglePlanMode(ctx: ExtensionContext): Promise<void> {
+        if (executionMode) {
+            planModeEnabled = false;
+            resetPlanState(true);
+            await enterPhase(ctx, 'normal');
+            ctx.ui.notify('Previous plan execution state cleared. Starting a new plan.', 'info');
+        }
+
+        planModeEnabled = !planModeEnabled;
+        resetPlanState(true);
 
         if (planModeEnabled) {
             await enterPhase(ctx, 'plan');
@@ -653,37 +673,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
         );
     }
 
-    async function executeCurrentPlan(ctx: ExtensionContext): Promise<void> {
-        if (executionMode) {
-            const remaining = remainingTodos();
-            if (remaining.length === 0) {
-                ctx.ui.notify('Plan execution is already active, but no remaining todos were found.', 'info');
-                return;
-            }
-            continuationCount = 0;
-            noProgressContinuationCount = 0;
-            currentAgentProgressCount = 0;
-            persistState();
-            sendExecutionHandoff(remaining[0], 'continue');
-            return;
-        }
-
-        if (pendingBlockedCommand && todoItems.length === 0) {
-            todoItems = [todoFromBlockedCommand(pendingBlockedCommand)];
-            planStage = 'plan';
-            persistState();
-        }
-
-        if (todoItems.length > 0) {
-            await promptForPlanExecution(ctx);
-            return;
-        }
-
-        ctx.ui.notify('No executable plan is available yet. Refine the plan or ask for a <proposed_plan>.', 'warning');
-        const refinement = await ctx.ui.editor('Refine the plan:', '');
-        sendRefinementMessage(refinement ?? '');
-    }
-
     function updateTaskStatus(update: PlanTaskUpdateInput): TodoItem {
         const taskId = normalizePlanText(update.taskId, 'taskId');
         const status = update.status;
@@ -755,7 +744,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
                         type: 'text',
                         text: ctx.hasUI
                             ? 'Structured plan submitted to Plan Mode.'
-                            : 'Structured plan submitted. Run /execute to approve it.',
+                            : 'Structured plan submitted.',
                     },
                 ],
                 details: { plan, todos: todoItems },
@@ -776,12 +765,16 @@ export default function planModeExtension(pi: ExtensionAPI): void {
             'If a task cannot continue, mark it blocked with a short message instead of silently stopping.',
         ],
         parameters: PLAN_TASK_UPDATE_PARAMETERS,
-        async execute(_toolCallId, params: PlanTaskUpdateInput) {
+        async execute(_toolCallId, params: PlanTaskUpdateInput, _signal, _onUpdate, ctx) {
             if (!executionMode) {
                 throw new Error('plan_task_update can only be used while executing an approved plan.');
             }
             const task = updateTaskStatus(params);
-            persistState();
+            if (todoItems.length > 0 && todoItems.every((t) => t.status === 'completed')) {
+                await finishExecution(ctx, true);
+            } else {
+                persistState();
+            }
             return {
                 content: [
                     {
@@ -797,11 +790,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
     pi.registerCommand('plan', {
         description: 'Toggle plan mode (read-only exploration)',
         handler: async (_args, ctx) => togglePlanMode(ctx),
-    });
-
-    pi.registerCommand('execute', {
-        description: 'Confirm and execute the current plan mode handoff',
-        handler: async (_args, ctx) => executeCurrentPlan(ctx),
     });
 
     pi.registerCommand('todos', {
@@ -829,7 +817,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
         if (isPlanModeWriteTool(event.toolName)) {
             return {
                 block: true,
-                reason: `Plan mode: ${event.toolName} is disabled. Do not edit files while Plan Mode is active. Stop using write tools and call propose_plan for the requested change, or ask a critical question with questionnaire. Use /execute after the plan is approved.`,
+                reason: `Plan mode: ${event.toolName} is disabled. Do not edit files while Plan Mode is active. Stop using write tools and call propose_plan for the requested change, or ask a critical question with questionnaire. The approval UI will start execution after the plan is approved.`,
             };
         }
 
@@ -894,7 +882,7 @@ Restrictions:
 - Bash is restricted to an allowlist of read-only commands.
 - If the user asks you to implement, edit, execute, continue, or apply changes while plan mode is active, treat that as a request to plan the execution. Do not attempt to execute it.
 - Do not try write-capable shell commands such as perl -pi, python scripts that write files, sed -i, cp, mv, tee, or shell redirection.
-- If the user wants to proceed after a plan exists, tell them to run /execute. Do not ask for a yes/no chat reply and do not tell them to apply shell commands manually.
+- If the user wants to proceed after a plan exists, use propose_plan so the approval UI can start execution automatically. Do not ask for a yes/no chat reply and do not tell them to apply shell commands manually.
 
 Workflow:
 1. Inspect the relevant code using read-only tools.
@@ -954,25 +942,17 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
             noProgressContinuationCount = 0;
             updateStatus(ctx);
         }
+        if (todoItems.length > 0 && todoItems.every((t) => t.status === 'completed')) {
+            await finishExecution(ctx, true);
+            return;
+        }
         persistState();
     });
 
     pi.on('agent_end', async (event, ctx) => {
         if (executionMode && todoItems.length > 0) {
             if (todoItems.every((t) => t.status === 'completed')) {
-                const completedList = todoItems.map((t) => `~~${t.text}~~`).join('\n');
-                pi.sendMessage(
-                    { customType: 'plan-complete', content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
-                    { triggerTurn: false },
-                );
-                executionMode = false;
-                todoItems = [];
-                pendingPlan = undefined;
-                continuationCount = 0;
-                noProgressContinuationCount = 0;
-                currentAgentProgressCount = 0;
-                await enterPhase(ctx, 'normal');
-                persistState();
+                await finishExecution(ctx, true);
                 return;
             }
 
@@ -980,12 +960,10 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
             if (todoItems.some((todo) => todo.status === 'blocked')) {
                 const blocked = todoItems.filter((todo) => todo.status === 'blocked');
                 ctx.ui.notify(
-                    `Plan execution paused: ${blocked.length} task(s) blocked. Run /todos for details or /execute to retry.`,
+                    `Plan execution stopped: ${blocked.length} task(s) blocked. Run /todos for details or /plan to create a revised plan.`,
                     'warning',
                 );
-                currentAgentProgressCount = 0;
-                noProgressContinuationCount = 0;
-                persistState();
+                await finishExecution(ctx, false);
                 return;
             }
 
@@ -999,22 +977,19 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
                 }
 
                 ctx.ui.notify(
-                    `Plan execution paused: no task progress was reported after ${MAX_NO_PROGRESS_CONTINUATIONS} retries. Remaining: ${remaining.length}. Run /execute to resume.`,
+                    `Plan execution stopped: no task progress was reported after ${MAX_NO_PROGRESS_CONTINUATIONS} retries. Remaining: ${remaining.length}. Run /todos for details or /plan to create a revised plan.`,
                     'warning',
                 );
-                currentAgentProgressCount = 0;
-                persistState();
+                await finishExecution(ctx, false);
                 return;
             }
 
             if (continuationCount >= MAX_AUTO_CONTINUATIONS) {
                 ctx.ui.notify(
-                    `Plan execution paused after ${MAX_AUTO_CONTINUATIONS} automatic continuations. Remaining: ${remaining.length}. Run /execute to resume.`,
+                    `Plan execution stopped after ${MAX_AUTO_CONTINUATIONS} automatic continuations. Remaining: ${remaining.length}. Run /todos for details or /plan to create a revised plan.`,
                     'warning',
                 );
-                currentAgentProgressCount = 0;
-                noProgressContinuationCount = 0;
-                persistState();
+                await finishExecution(ctx, false);
                 return;
             }
 
@@ -1058,7 +1033,7 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
                 formatRepairAttempted = false;
                 persistState();
                 ctx.ui.notify(
-                    'Plan Mode could not extract executable steps. Refine the plan, run /execute after a plan is available, or exit Plan Mode.',
+                    'Plan Mode could not extract executable steps. Refine the plan, submit a structured plan, or exit Plan Mode.',
                     'warning',
                 );
                 const choice = await ctx.ui.select('Plan format not recognized', [
@@ -1148,6 +1123,16 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
             }
             const allText = messages.map(getTextContent).join('\n');
             markCompletedSteps(allText, todoItems);
+        }
+
+        if (executionMode && (todoItems.length === 0 || todoItems.every((todo) => todo.status === 'completed'))) {
+            planModeEnabled = false;
+            resetPlanState(true);
+            activePhase = 'normal';
+            persistState();
+        } else if (!executionMode && activePhase === 'execute') {
+            activePhase = planModeEnabled ? 'plan' : 'normal';
+            persistState();
         }
 
         await enterPhase(ctx, activePhase);
