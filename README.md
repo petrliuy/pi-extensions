@@ -2,7 +2,7 @@
 
 Local Pi agent extensions for `~/.pi/agent/extensions`.
 
-Pi auto-discovers directory-style extensions from `~/.pi/agent/extensions/*/index.ts`. After editing an auto-discovered extension, reload Pi with `/reload`.
+Pi auto-discovers directory-style extensions from `~/.pi/agent/extensions/*/index.ts` and file-style extensions such as `rtk.ts`. After editing an auto-discovered extension, reload Pi with `/reload`.
 
 Official extension docs: https://pi.dev/docs/latest/extensions
 
@@ -16,6 +16,8 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - `buddy/` - Local terminal companion modeled on Claude Code `/buddy`.
 - `usage/` - Provider quota and balance queries for selected model providers.
 - `undo/` - Restore files changed by the last Pi edit/write tool turn.
+- `tooling/` - Always-on tool selection guidance that nudges agents toward `rg`, `fd`, `jq`, `yq`, `uvx`, `npx`, `httpie`, and Context7.
+- `rtk.ts` - RTK transparent bash proxy that rewrites supported commands through `rtk rewrite` for compact output.
 
 ## Usage
 
