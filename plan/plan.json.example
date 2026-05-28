@@ -5,7 +5,7 @@
             "model": "claude-4-opus",
             "thinking": "high",
             "tools": ["read", "bash", "grep", "find", "ls", "questionnaire", "propose_plan"],
-            "context": "Use strong reasoning. Focus on architecture, risks, trade-offs, and an executable plan. Do not edit files or call write-capable tools."
+            "context": "Use strong reasoning. Inspect first, ask high-impact clarifying questions when needed, and include explicit assumptions/defaults in the proposal. Do not edit files or call write-capable tools."
         },
         "execute": {
             "provider": "anthropic",

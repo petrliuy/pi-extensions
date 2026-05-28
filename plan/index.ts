@@ -53,6 +53,7 @@ interface PlanProposalInput {
     title: string;
     summary: string;
     steps: string[];
+    assumptions?: string[];
     verification?: string[];
     risks?: string[];
     files?: string[];
@@ -62,6 +63,7 @@ interface PlanProposal {
     title: string;
     summary: string;
     steps: string[];
+    assumptions: string[];
     verification: string[];
     risks: string[];
     files: string[];
@@ -97,6 +99,11 @@ const PLAN_PROPOSAL_PARAMETERS = {
             type: 'array',
             items: { type: 'string' },
             description: 'Optional verification commands or scenarios.',
+        },
+        assumptions: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Explicit defaults or assumptions used when planning without asking.',
         },
         risks: {
             type: 'array',
@@ -257,6 +264,7 @@ function normalizePlanProposal(params: PlanProposalInput): PlanProposal {
         title: normalizePlanText(params.title, 'title'),
         summary: normalizePlanText(params.summary, 'summary'),
         steps: normalizePlanList(params.steps, 'steps', true),
+        assumptions: normalizePlanList(params.assumptions, 'assumptions', false),
         verification: normalizePlanList(params.verification, 'verification', false),
         risks: normalizePlanList(params.risks, 'risks', false),
         files: normalizePlanList(params.files, 'files', false),
@@ -276,6 +284,10 @@ function todosFromPlanProposal(plan: PlanProposal): TodoItem[] {
 
 function formatPlanProposal(plan: PlanProposal): string {
     const steps = plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
+    const assumptions =
+        plan.assumptions.length > 0
+            ? `\n\n**Assumptions / Defaults**\n${plan.assumptions.map((item, index) => `${index + 1}. ${item}`).join('\n')}`
+            : '';
     const verification =
         plan.verification.length > 0
             ? `\n\n**Verification**\n${plan.verification.map((step, index) => `${index + 1}. ${step}`).join('\n')}`
@@ -285,7 +297,7 @@ function formatPlanProposal(plan: PlanProposal): string {
             ? `\n\n**Risks**\n${plan.risks.map((risk, index) => `${index + 1}. ${risk}`).join('\n')}`
             : '';
     const files = plan.files.length > 0 ? `\n\n**Likely Files**\n${plan.files.join('\n')}` : '';
-    return `**${plan.title}**\n\n${plan.summary}\n\n**Plan Steps (${plan.steps.length})**\n${steps}${verification}${risks}${files}`;
+    return `**${plan.title}**\n\n${plan.summary}\n\n**Plan Steps (${plan.steps.length})**\n${steps}${assumptions}${verification}${risks}${files}`;
 }
 
 function normalizeStoredTodoItems(items: TodoItem[]): TodoItem[] {
@@ -307,6 +319,7 @@ function normalizeStoredPlan(plan: PlanProposal | undefined): PlanProposal | und
         title: plan.title,
         summary: plan.summary,
         steps: plan.steps,
+        assumptions: plan.assumptions ?? [],
         verification: plan.verification ?? [],
         risks: plan.risks ?? [],
         files: plan.files ?? [],
@@ -443,10 +456,23 @@ export default function planModeExtension(pi: ExtensionAPI): void {
                 { customType: 'plan-complete', content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
                 { triggerTurn: false },
             );
+        } else if (!completed && todoItems.length > 0) {
+            const blockedList = todoItems
+                .filter((t) => t.status !== 'completed')
+                .map((t) => `${t.status === 'blocked' ? '!' : '○'} ${t.text}${t.message ? `\n  ${t.message}` : ''}`)
+                .join('\n');
+            pi.sendMessage(
+                {
+                    customType: 'plan-blocked',
+                    content: `**Plan Blocked**\n\n${blockedList}`,
+                    display: true,
+                },
+                { triggerTurn: false },
+            );
         }
 
         planModeEnabled = false;
-        resetPlanState(completed);
+        resetPlanState(true);
         await enterPhase(ctx, 'normal');
         persistState();
     }
@@ -545,6 +571,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
             'Steps:',
             ...plan.steps.map((step, index) => `${index + 1}. ${step}`),
         ];
+        if (plan.assumptions.length > 0) {
+            lines.push('', 'Assumptions:', ...plan.assumptions.map((item, index) => `${index + 1}. ${item}`));
+        }
         if (plan.verification.length > 0) {
             lines.push('', 'Verification:', ...plan.verification.map((item, index) => `${index + 1}. ${item}`));
         }
@@ -579,7 +608,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
                 if (field[1].toLowerCase() === 'summary') summary = field[2].trim();
                 continue;
             }
-            const section = line.match(/^(Steps|Verification|Risks|Files):\s*$/i);
+            const section = line.match(/^(Steps|Assumptions|Verification|Risks|Files):\s*$/i);
             if (section) {
                 current = section[1].toLowerCase();
                 sections.set(current, []);
@@ -594,24 +623,39 @@ export default function planModeExtension(pi: ExtensionAPI): void {
             title,
             summary,
             steps: parseEditableList(sections.get('steps') ?? fallback.steps),
+            assumptions: parseEditableList(sections.get('assumptions') ?? fallback.assumptions),
             verification: parseEditableList(sections.get('verification') ?? fallback.verification),
             risks: parseEditableList(sections.get('risks') ?? fallback.risks),
             files: parseEditableList(sections.get('files') ?? fallback.files),
         });
     }
 
-    async function promptForPlanExecution(ctx: ExtensionContext): Promise<void> {
-        const todoListText = todoItems.map((t, i) => `${i + 1}. ☐ ${t.text}`).join('\n');
-        pi.sendMessage(
-            {
-                customType: 'plan-todo-list',
-                content: `**Plan Steps (${todoItems.length}):**\n\n${todoListText}`,
-                display: true,
-            },
-            { triggerTurn: false },
-        );
+    async function promptForPlanExecution(ctx: ExtensionContext, plan?: PlanProposal): Promise<void> {
+        const proposalContent = plan ? formatPlanProposal(plan) : undefined;
+        if (plan) {
+            pi.sendMessage(
+                {
+                    customType: 'plan-proposal',
+                    content: proposalContent ?? formatPlanProposal(plan),
+                    display: true,
+                    details: plan,
+                },
+                { triggerTurn: false },
+            );
+        } else {
+            const todoListText = todoItems.map((t, i) => `${i + 1}. ☐ ${t.text}`).join('\n');
+            pi.sendMessage(
+                {
+                    customType: 'plan-todo-list',
+                    content: `**Plan Steps (${todoItems.length}):**\n\n${todoListText}`,
+                    display: true,
+                },
+                { triggerTurn: false },
+            );
+        }
 
-        const choice = await ctx.ui.select('Plan mode - what next?', [
+        const promptTitle = proposalContent ? `${proposalContent}\n\nPlan proposal - what next?` : 'Plan proposal - what next?';
+        const choice = await ctx.ui.select(promptTitle, [
             'Execute with auto edits',
             'Execute with manual review',
             'Keep planning',
@@ -641,13 +685,14 @@ export default function planModeExtension(pi: ExtensionAPI): void {
                     title: 'Plan',
                     summary: 'Edited legacy plan.',
                     steps: todoItems.map((todo) => todo.text),
+                    assumptions: [],
                 });
             const edited = await ctx.ui.editor('Edit plan:', formatEditablePlan(basePlan));
             if (edited?.trim()) {
                 pendingPlan = parseEditablePlan(edited, basePlan);
                 todoItems = todosFromPlanProposal(pendingPlan);
                 persistState();
-                await promptForPlanExecution(ctx);
+                await promptForPlanExecution(ctx, pendingPlan);
                 return;
             }
             persistState();
@@ -707,6 +752,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
         promptSnippet: 'Submit a structured Plan Mode proposal for implementation or refactor requests.',
         promptGuidelines: [
             'Use propose_plan when Plan Mode needs an executable implementation, fix, refactor, or verification plan.',
+            'Include explicit assumptions/defaults when planning without asking a clarifying question.',
             'Do not ask the user to reply yes or no in chat for execution approval; propose_plan will trigger the harness approval UI.',
         ],
         parameters: PLAN_PROPOSAL_PARAMETERS,
@@ -724,18 +770,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
             suppressNextPlanPrompt = true;
             persistState();
 
-            pi.sendMessage(
-                {
-                    customType: 'plan-proposal',
-                    content: formatPlanProposal(plan),
-                    display: true,
-                    details: plan,
-                },
-                { triggerTurn: false },
-            );
-
             if (ctx.hasUI) {
-                await promptForPlanExecution(ctx);
+                await promptForPlanExecution(ctx, plan);
             }
 
             return {
@@ -770,11 +806,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
                 throw new Error('plan_task_update can only be used while executing an approved plan.');
             }
             const task = updateTaskStatus(params);
-            if (todoItems.length > 0 && todoItems.every((t) => t.status === 'completed')) {
-                await finishExecution(ctx, true);
-            } else {
-                persistState();
-            }
+            persistState();
+            updateStatus(ctx);
             return {
                 content: [
                     {
@@ -886,16 +919,17 @@ Restrictions:
 
 Workflow:
 1. Inspect the relevant code using read-only tools.
-2. Identify key ambiguities or decisions that affect implementation direction.
-3. If there ARE critical open questions:
+2. Identify intent, success criteria, scope, constraints, current state, and key tradeoffs.
+3. Ask when a high-impact preference or requirement cannot be derived from repository context:
    - Use the questionnaire tool. Provide 2-4 concrete options plus a "Custom / Other" option.
    - After receiving answers, incorporate the decisions into your approach.
-4. If everything is clear, skip asking and proceed directly.
+4. If you proceed without asking, state the default assumptions explicitly in propose_plan.assumptions.
 
 Once the approach is clear for a fix, change, implementation, or refactor request, call propose_plan with:
 - title: short title
 - summary: brief summary
 - steps: ordered implementation steps
+- assumptions: explicit defaults or assumptions, especially for any skipped questions
 - verification: verification commands or scenarios
 - risks: optional risk notes
 - files: optional likely touched files or modules
@@ -960,7 +994,7 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
             if (todoItems.some((todo) => todo.status === 'blocked')) {
                 const blocked = todoItems.filter((todo) => todo.status === 'blocked');
                 ctx.ui.notify(
-                    `Plan execution stopped: ${blocked.length} task(s) blocked. Run /todos for details or /plan to create a revised plan.`,
+                    `Plan execution blocked: ${blocked.length} task(s) blocked. Run /plan to create a revised plan.`,
                     'warning',
                 );
                 await finishExecution(ctx, false);
@@ -977,18 +1011,28 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
                 }
 
                 ctx.ui.notify(
-                    `Plan execution stopped: no task progress was reported after ${MAX_NO_PROGRESS_CONTINUATIONS} retries. Remaining: ${remaining.length}. Run /todos for details or /plan to create a revised plan.`,
+                    `Plan execution blocked: no task progress was reported after ${MAX_NO_PROGRESS_CONTINUATIONS} retries.`,
                     'warning',
                 );
+                if (remaining[0]) {
+                    remaining[0].status = 'blocked';
+                    remaining[0].completed = false;
+                    remaining[0].message = `No structured task progress was reported after ${MAX_NO_PROGRESS_CONTINUATIONS} retries.`;
+                }
                 await finishExecution(ctx, false);
                 return;
             }
 
             if (continuationCount >= MAX_AUTO_CONTINUATIONS) {
                 ctx.ui.notify(
-                    `Plan execution stopped after ${MAX_AUTO_CONTINUATIONS} automatic continuations. Remaining: ${remaining.length}. Run /todos for details or /plan to create a revised plan.`,
+                    `Plan execution blocked after ${MAX_AUTO_CONTINUATIONS} automatic continuations.`,
                     'warning',
                 );
+                if (remaining[0]) {
+                    remaining[0].status = 'blocked';
+                    remaining[0].completed = false;
+                    remaining[0].message = `Automatic continuation limit reached with ${remaining.length} remaining task(s).`;
+                }
                 await finishExecution(ctx, false);
                 return;
             }

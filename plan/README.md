@@ -7,8 +7,9 @@ Read-only exploration mode for safe code analysis, with phase-based model routin
 - **Read-only tools**: Restricts available tools to read, bash, grep, find, ls, questionnaire, and propose_plan
 - **Bash allowlist**: Only read-only bash commands are allowed
 - **Write-tool hard block**: Blocks edit, write, and apply_patch tool calls while Plan Mode is active
-- **Structured plan approval**: Uses the `propose_plan` tool to submit executable JSON-shaped plans and trigger the harness approval UI
+- **Structured plan approval**: Uses the `propose_plan` tool to submit visible JSON-shaped plans and trigger the harness approval UI
 - **Structured task progress**: Uses `plan_task_update` during execution; `[DONE:n]` remains a legacy fallback
+- **Codex-style clarification**: Inspects first, asks high-impact questions when needed, and records skipped defaults as assumptions
 - **Plan extraction fallback**: Extracts numbered steps from `<proposed_plan>` blocks, with legacy `Plan:` fallback
 - **Blocked-command handoff**: Captures blocked write commands as structured todos so execution can be approved explicitly
 - **Auto-continuation**: Continues approved execution while structured task progress is reported, with two no-progress retry turns and a safety limit
@@ -76,14 +77,14 @@ User-provided fields in `plan.json` are shallow-merged over these defaults. Only
 
 1. Enable plan mode with `/plan` or `--plan` flag
 2. Ask the agent to analyze code and create a plan
-3. For implementation, fix, or refactor requests, the agent should call `propose_plan` with `title`, `summary`, ordered `steps`, optional `verification`, optional `risks`, and optional `files`.
+3. For implementation, fix, or refactor requests, the agent should ask high-impact questions when repo context cannot answer them, then call `propose_plan` with `title`, `summary`, ordered `steps`, optional `assumptions`, optional `verification`, optional `risks`, and optional `files`.
 
-4. Choose `Execute with auto edits`, `Execute with manual review`, `Keep planning`, or `Edit plan` when prompted. Execution starts automatically after approval.
+4. Review the full visible proposal, then choose `Execute with auto edits`, `Execute with manual review`, `Keep planning`, or `Edit plan`. Execution starts automatically after approval.
 5. During execution, the agent updates task state with `plan_task_update` (`pending`, `in_progress`, `completed`, or `blocked`).
-6. If more steps remain, Plan Mode automatically sends a continuation follow-up. If a turn forgets to report task progress, Plan Mode retries twice with a stronger progress reminder before stopping execution tracking.
+6. If more steps remain, Plan Mode automatically sends a continuation follow-up. If a turn forgets to report task progress, Plan Mode retries twice with a stronger progress reminder before marking execution blocked.
 7. Progress widget shows completion status.
 
-The execution prompt appears when the agent calls `propose_plan`, when the last assistant response contains extractable legacy plan steps, or when Plan Mode captures a blocked write command. Confirming execution sends a follow-up handoff turn so approval made from the UI starts reliably. Plain yes/no chat replies are not treated as approval. If the agent emits malformed plan markup, Plan Mode asks for one format-repair turn and then warns the user if extraction still fails.
+The execution prompt appears with the full proposal when the agent calls `propose_plan`, and with a minimal step list only for legacy extracted steps or captured blocked commands. Confirming execution sends a follow-up handoff turn so approval made from the UI starts reliably. Plain yes/no chat replies are not treated as approval. If the agent emits malformed plan markup, Plan Mode asks for one format-repair turn and then warns the user if extraction still fails.
 
 ## How It Works
 
@@ -109,6 +110,8 @@ Plan phase tools are always constrained to the built-in read-only allowlist, and
 - `edit`, `write`, and `apply_patch` tool calls are hard-blocked even if they are accidentally exposed
 - Bash commands filtered through allowlist
 - Requests to implement, edit, continue, or apply changes are treated as planning requests
+- Agent asks clarifying questions when product intent, scope, success criteria, or tradeoffs cannot be inferred from local context
+- If it does not ask, skipped defaults are rendered in the proposal as `assumptions`
 - Agent calls `propose_plan` without making changes
 - Legacy `<proposed_plan>` / `Plan:` text extraction remains as a fallback
 - Blocked write commands explicitly instruct the agent to stop retrying write-capable shell commands and produce a plan instead
@@ -121,8 +124,8 @@ Plan phase tools are always constrained to the built-in read-only allowlist, and
 - `plan_task_update` tracks task state by stable task id
 - `[DONE:n]` markers are accepted only as a compatibility fallback
 - Automatic continuation sends the next execution follow-up while steps remain and progress is being marked
-- No-progress turns get two automatic retries before Plan Mode stops execution tracking
-- Tasks marked `blocked` still stop execution immediately
+- No-progress turns get two automatic retries before Plan Mode marks execution blocked and clears the active state
+- Tasks marked `blocked` stop execution immediately and clear the active state
 - Widget shows progress
 - When all steps are marked done, a completion message is sent and mode returns to `normal`
 
