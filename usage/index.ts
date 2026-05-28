@@ -842,8 +842,6 @@ function findWindowPercent(report: UsageReport, match: (name: string) => boolean
 }
 
 function getCompactUsageLine(report: UsageReport): string {
-	if (report.status !== "ok") return `${report.provider} usage unavailable`;
-
 	const fiveHour = findWindowPercent(report, (name) => name === "5h" || name.includes("5 hour"));
 	const weekly = findWindowPercent(report, (name) => name.includes("weekly"));
 	const monthly = findWindowPercent(report, (name) => name.includes("month"));
@@ -898,8 +896,11 @@ export default function usageExtension(pi: ExtensionAPI): void {
 
 	function setStatusLineFromReport(ctx: ExtensionContext, selected: SelectedModel, report: UsageReport, generation: number): void {
 		if (generation !== refreshGeneration || currentModelKey !== getModelKey(selected)) return;
-		const color = report.status === "ok" ? "accent" : "muted";
-		ctx.ui.setWidget("usage-statusline", [ctx.ui.theme.fg(color, getCompactUsageLine(report))], { placement: "belowEditor" });
+		if (report.status !== "ok") {
+			ctx.ui.setWidget("usage-statusline", undefined);
+			return;
+		}
+		ctx.ui.setWidget("usage-statusline", [ctx.ui.theme.fg("accent", getCompactUsageLine(report))], { placement: "belowEditor" });
 	}
 
 	async function refreshStatusLine(ctx: ExtensionContext, selected: SelectedModel | undefined, options: { showUpdating?: boolean } = {}): Promise<void> {
