@@ -103,10 +103,10 @@ User-provided fields in `plan.json` are shallow-merged over these defaults. Only
 3. For implementation, fix, or refactor requests, the agent applies a clarification gate: ask for material user decisions that repo context cannot answer, then call `propose_plan` with `title`, `summary`, ordered `steps`, optional `assumptions`, optional `verification`, optional `risks`, and optional `files`. The `summary` should capture key code findings, constraints, and implementation judgment needed during execution.
 4. Review the visible proposal, then choose `Execute plan`, `View full plan`, `Edit plan`, or `Quit plan`. `View full plan` opens the complete text and returns to approval when closed. Execution starts automatically after approval; saving an edited plan also starts execution with the edited steps.
 5. During execution, the agent updates task state with `plan_task_update` (`pending`, `in_progress`, `completed`, or `blocked`).
-6. If more steps remain, Plan Mode automatically sends a continuation follow-up. If a turn forgets to report task progress, Plan Mode retries twice with a stronger progress reminder before marking execution blocked.
-7. Progress widget shows completion status.
+6. If more steps remain, Plan Mode automatically sends hidden continuation follow-ups. If a turn forgets to report task progress, Plan Mode retries twice with a stronger hidden reminder before marking execution blocked.
+7. The status bar shows completion count, and the progress widget shows only the current or next step.
 
-The approval prompt appears when the agent calls `propose_plan`; after approval, execution context includes compact approved plan metadata plus remaining steps. `View full plan` opens the same proposal text in a larger viewer and ignores any edits made there; only `Edit plan` mutates the pending plan. Blocked commands captured during planning use a minimal step-list handoff. Confirming execution or saving an edited plan sends a short follow-up handoff turn so approval made from the UI starts reliably. Plain yes/no chat replies are not treated as approval. Pressing Esc/Ctrl+C in the approval/edit UI closes that UI while keeping the pending plan available. Running `/plan` during execution clears the active execution state and exits Plan Mode.
+The approval prompt appears when the agent calls `propose_plan`; after approval, execution context includes compact approved plan metadata plus remaining steps. `View full plan` opens the same proposal text in a larger viewer and ignores any edits made there; only `Edit plan` mutates the pending plan. Blocked commands captured during planning use a minimal step-list handoff. Confirming execution or saving an edited plan sends a hidden follow-up handoff turn so approval made from the UI starts reliably without adding protocol noise to the chat. Plain yes/no chat replies are not treated as approval. Pressing Esc/Ctrl+C in the approval/edit UI closes that UI while keeping the pending plan available. Running `/plan` during execution clears the active execution state and exits Plan Mode.
 
 ## How It Works
 
@@ -213,4 +213,4 @@ The status indicator shows different information per phase:
 If a profile overrides `provider`/`model`, the status shows `⏸ anthropic/claude-4-opus`.
 If a profile overrides `thinking`, the status shows `⏸ plan high`.
 
-A widget (`plan-todos`) renders the full todo list at the bottom of the UI, with completed items struck through and shown in muted color.
+A widget (`plan-todos`) renders only the current in-progress step, blocked step, or next pending step. Full task details remain available through `/todos`.

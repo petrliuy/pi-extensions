@@ -95,22 +95,21 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 
 		if (state.mode === 'executing' && state.todos.length > 0) {
-			const lines = state.todos.map((item) => {
-				if (item.status === 'completed') {
-					return (
-						ctx.ui.theme.fg('success', '☑ ') +
-						ctx.ui.theme.fg('muted', ctx.ui.theme.strikethrough(item.text))
-					);
-				}
-				if (item.status === 'blocked') {
-					return `${ctx.ui.theme.fg('warning', '⚠ ')}${item.text}`;
-				}
-				if (item.status === 'in_progress') {
-					return `${ctx.ui.theme.fg('accent', '◐ ')}${item.text}`;
-				}
-				return `${ctx.ui.theme.fg('muted', '☐ ')}${item.text}`;
-			});
-			ctx.ui.setWidget('plan-todos', lines);
+			const activeTodo =
+				state.todos.find((item) => item.status === 'in_progress') ??
+				state.todos.find((item) => item.status === 'blocked') ??
+				state.todos.find((item) => item.status === 'pending');
+			if (activeTodo) {
+				const label =
+					activeTodo.status === 'blocked'
+						? ctx.ui.theme.fg('warning', 'Blocked')
+						: activeTodo.status === 'in_progress'
+							? ctx.ui.theme.fg('accent', 'Current')
+							: ctx.ui.theme.fg('muted', 'Next');
+				ctx.ui.setWidget('plan-todos', [`${label}: ${activeTodo.text}`]);
+			} else {
+				ctx.ui.setWidget('plan-todos', undefined);
+			}
 		} else {
 			ctx.ui.setWidget('plan-todos', undefined);
 		}
@@ -192,20 +191,19 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	async function finishExecution(ctx: ExtensionContext, completed: boolean): Promise<void> {
 		if (completed && state.todos.length > 0) {
-			const completedList = state.todos.map((t) => `~~${t.text}~~`).join('\n');
 			pi.sendMessage(
-				{ customType: 'plan-complete', content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
+				{ customType: 'plan-complete', content: '**Plan Complete!** ✓', display: true },
 				{ triggerTurn: false },
 			);
 		} else if (!completed && state.todos.length > 0) {
-			const blockedList = state.todos
-				.filter((t) => t.status !== 'completed')
-				.map((t) => `${t.status === 'blocked' ? '!' : '○'} ${t.text}${t.message ? `\n  ${t.message}` : ''}`)
-				.join('\n');
+			const blockedTodo = state.todos.find((t) => t.status === 'blocked') ?? state.todos.find((t) => t.status !== 'completed');
+			const blockedText = blockedTodo
+				? `\n\n${blockedTodo.text}${blockedTodo.message ? `\n${blockedTodo.message}` : ''}`
+				: '';
 			pi.sendMessage(
 				{
 					customType: 'plan-blocked',
-					content: `**Plan Blocked**\n\n${blockedList}`,
+					content: `**Plan Blocked**${blockedText}`,
 					display: true,
 				},
 				{ triggerTurn: false },
@@ -260,7 +258,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 
 		pi.sendMessage(
-			{ customType: 'plan-mode-execute', content: execMessage, display: true },
+			{ customType: 'plan-mode-execute', content: execMessage, display: false },
 			{ triggerTurn: true, deliverAs: 'followUp' },
 		);
 	}
@@ -270,7 +268,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			{
 				customType: 'plan-mode-execute',
 				content: `Continue executing the approved plan.\n\nThe previous turn ended without structured task progress. Work on ${firstTodo ? formatTodoLine(firstTodo) : 'the first remaining task'} and call plan_task_update before stopping. If no task can move forward, mark it blocked with a short reason.`,
-				display: true,
+				display: false,
 			},
 			{ triggerTurn: true, deliverAs: 'followUp' },
 		);
