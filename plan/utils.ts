@@ -3,150 +3,215 @@
  * Extracted for testability.
  */
 
-// Destructive commands blocked in plan mode
-const DESTRUCTIVE_PATTERNS = [
-	/\brm\b/i,
-	/\brmdir\b/i,
-	/\bmv\b/i,
-	/\bcp\b/i,
-	/\bmkdir\b/i,
-	/\btouch\b/i,
-	/\bchmod\b/i,
-	/\bchown\b/i,
-	/\bchgrp\b/i,
-	/\bln\b/i,
-	/\btee\b/i,
-	/\btruncate\b/i,
-	/\bdd\b/i,
-	/\bshred\b/i,
-	/(^|[^<])>(?!>)/,
-	/>>/,
-	/\bnpm\s+(install|uninstall|update|ci|link|publish)/i,
-	/\byarn\s+(add|remove|install|publish)/i,
-	/\bpnpm\s+(add|remove|install|publish)/i,
-	/\bpip\s+(install|uninstall)/i,
-	/\bapt(-get)?\s+(install|remove|purge|update|upgrade)/i,
-	/\bbrew\s+(install|uninstall|upgrade)/i,
-	/\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|branch\s+-[dD]|stash|cherry-pick|revert|tag|init|clone)/i,
-	/\bsudo\b/i,
-	/\bsu\b/i,
-	/\bkill\b/i,
-	/\bpkill\b/i,
-	/\bkillall\b/i,
-	/\breboot\b/i,
-	/\bshutdown\b/i,
-	/\bsystemctl\s+(start|stop|restart|enable|disable)/i,
-	/\bservice\s+\S+\s+(start|stop|restart)/i,
-	/\b(vim?|nano|emacs|code|subl)\b/i,
-	/\bsed\s+(-[^\s]*i|--in-place)\b/i,
-	/\bperl\s+-[^\s]*pi\b/i,
-];
+interface ShellToken {
+	text: string;
+	operator: boolean;
+}
 
-// Safe read-only commands allowed in plan mode
-const SAFE_PATTERNS = [
-	/^\s*cat\b/,
-	/^\s*head\b/,
-	/^\s*tail\b/,
-	/^\s*less\b/,
-	/^\s*more\b/,
-	/^\s*grep\b/,
-	/^\s*find\b/,
-	/^\s*ls\b/,
-	/^\s*pwd\b/,
-	/^\s*echo\b/,
-	/^\s*printf\b/,
-	/^\s*wc\b/,
-	/^\s*sort\b/,
-	/^\s*uniq\b/,
-	/^\s*diff\b/,
-	/^\s*file\b/,
-	/^\s*stat\b/,
-	/^\s*du\b/,
-	/^\s*df\b/,
-	/^\s*tree\b/,
-	/^\s*which\b/,
-	/^\s*whereis\b/,
-	/^\s*type\b/,
-	/^\s*env\b/,
-	/^\s*printenv\b/,
-	/^\s*uname\b/,
-	/^\s*whoami\b/,
-	/^\s*id\b/,
-	/^\s*date\b/,
-	/^\s*cal\b/,
-	/^\s*uptime\b/,
-	/^\s*ps\b/,
-	/^\s*top\b/,
-	/^\s*htop\b/,
-	/^\s*free\b/,
-	/^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get)/i,
-	/^\s*git\s+ls-/i,
-	/^\s*npm\s+(list|ls|view|info|search|outdated|audit)/i,
-	/^\s*yarn\s+(list|info|why|audit)/i,
-	/^\s*node\s+--version/i,
-	/^\s*python\s+--version/i,
-	/^\s*curl\s/i,
-	/^\s*wget\s+-O\s*-/i,
-	/^\s*jq\b/,
-	/^\s*sed\s+-n/i,
-	/^\s*awk\b/,
-	/^\s*rg\b/,
-	/^\s*fd\b/,
-	/^\s*bat\b/,
-	/^\s*eza\b/,
-];
-
-const SAFE_PIPE_COMMANDS = new Set([
-	"awk",
-	"bat",
-	"cat",
-	"cut",
-	"diff",
-	"eza",
-	"fd",
-	"file",
-	"find",
-	"grep",
-	"head",
-	"jq",
-	"less",
-	"ls",
-	"more",
-	"printf",
-	"pwd",
-	"rg",
-	"sort",
-	"tail",
-	"tree",
-	"uniq",
-	"wc",
+const COMMAND_SEPARATORS = new Set([";", "&&", "||", "|", "("]);
+const COMMAND_PREFIXES = new Set(["command", "env", "time", "nice", "nohup"]);
+const WRITE_COMMANDS = new Set([
+	"rm",
+	"rmdir",
+	"mv",
+	"cp",
+	"mkdir",
+	"touch",
+	"chmod",
+	"chown",
+	"chgrp",
+	"ln",
+	"tee",
+	"truncate",
+	"dd",
+	"shred",
+	"sudo",
+	"su",
+	"kill",
+	"pkill",
+	"killall",
+	"reboot",
+	"shutdown",
+	"vim",
+	"vi",
+	"nano",
+	"emacs",
+	"code",
+	"subl",
+]);
+const PACKAGE_WRITE_COMMANDS = new Set(["install", "uninstall", "update", "ci", "link", "publish", "add", "remove"]);
+const GIT_WRITE_COMMANDS = new Set([
+	"add",
+	"commit",
+	"push",
+	"pull",
+	"merge",
+	"rebase",
+	"reset",
+	"checkout",
+	"stash",
+	"cherry-pick",
+	"revert",
+	"tag",
+	"init",
+	"clone",
 ]);
 
-function isSafeSegment(segment: string): boolean {
-	const trimmed = segment.trim();
-	if (!trimmed) return true;
-	if (/^cd\s+/.test(trimmed)) return true;
-	return SAFE_PATTERNS.some((p) => p.test(trimmed));
+function tokenizeShell(command: string): ShellToken[] {
+	const tokens: ShellToken[] = [];
+	let text = "";
+	let quote: "'" | '"' | undefined;
+
+	function pushText(): void {
+		if (text.length > 0) {
+			tokens.push({ text, operator: false });
+			text = "";
+		}
+	}
+
+	for (let i = 0; i < command.length; i++) {
+		const char = command[i];
+		if (quote) {
+			if (char === "\\") {
+				text += command[i + 1] ?? "";
+				i++;
+			} else if (char === quote) {
+				quote = undefined;
+			} else {
+				text += char;
+			}
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char;
+			continue;
+		}
+		if (char === "\\") {
+			text += command[i + 1] ?? "";
+			i++;
+			continue;
+		}
+		if (/\s/.test(char)) {
+			pushText();
+			continue;
+		}
+		const pair = command.slice(i, i + 2);
+		if (pair === "&&" || pair === "||" || pair === ">>") {
+			pushText();
+			tokens.push({ text: pair, operator: true });
+			i++;
+			continue;
+		}
+		if (";|<>()>".includes(char)) {
+			pushText();
+			tokens.push({ text: char, operator: true });
+			continue;
+		}
+		text += char;
+	}
+	pushText();
+	return tokens;
 }
 
-function isReadOnlyShellPipeline(command: string): boolean {
-	const segments = command
-		.split(/&&|\|\|?/)
-		.map((segment) => segment.trim())
-		.filter(Boolean);
-	if (segments.length <= 1) return false;
-
-	return segments.every((segment) => {
-		if (isSafeSegment(segment)) return true;
-		const commandName = segment.match(/^\s*(?:env\s+)?([A-Za-z0-9_.-]+)/)?.[1];
-		return commandName !== undefined && SAFE_PIPE_COMMANDS.has(commandName);
-	});
+function isAssignment(token: string): boolean {
+	return /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token);
 }
 
-export function isSafeCommand(command: string): boolean {
-	const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(command));
-	const isSafe = SAFE_PATTERNS.some((p) => p.test(command));
-	return !isDestructive && (isSafe || isReadOnlyShellPipeline(command));
+function nextWord(tokens: ShellToken[], start: number): { index: number; text: string } | undefined {
+	for (let i = start; i < tokens.length; i++) {
+		const token = tokens[i];
+		if (token.operator) return undefined;
+		if (token.text.length > 0) return { index: i, text: token.text };
+	}
+	return undefined;
+}
+
+function nextSubcommand(tokens: ShellToken[], start: number, optionsWithValue: Set<string>): { index: number; text: string } | undefined {
+	for (let i = start; i < tokens.length; i++) {
+		const token = tokens[i];
+		if (token.operator) return undefined;
+		const text = token.text;
+		if (text.startsWith("-")) {
+			if (optionsWithValue.has(text)) i++;
+			continue;
+		}
+		return { index: i, text };
+	}
+	return undefined;
+}
+
+function hasShellEval(tokens: ShellToken[], commandIndex: number): boolean {
+	const command = tokens[commandIndex].text.toLowerCase();
+	if (!["bash", "sh", "zsh"].includes(command)) return false;
+	for (let i = commandIndex + 1; i < tokens.length && !tokens[i].operator; i++) {
+		if (/^-[A-Za-z]*c[A-Za-z]*$/.test(tokens[i].text)) {
+			const script = nextWord(tokens, i + 1);
+			return script ? isSideEffectCommand(script.text) : true;
+		}
+	}
+	return false;
+}
+
+function isCommandSideEffect(tokens: ShellToken[], commandIndex: number): boolean {
+	const command = tokens[commandIndex].text.toLowerCase();
+	if (WRITE_COMMANDS.has(command)) return true;
+	if (command === "git") {
+		const subcommand = nextSubcommand(tokens, commandIndex + 1, new Set(["-C", "-c", "--git-dir", "--work-tree"]))?.text.toLowerCase();
+		if (!subcommand) return false;
+		if (subcommand === "branch") {
+			return tokens.slice(commandIndex + 1).some((token) => !token.operator && /^-[A-Za-z]*[dD]/.test(token.text));
+		}
+		if (subcommand === "stash") {
+			const stashAction = nextSubcommand(tokens, commandIndex + 2, new Set())?.text.toLowerCase();
+			return stashAction ? !["list", "show"].includes(stashAction) : true;
+		}
+		return GIT_WRITE_COMMANDS.has(subcommand);
+	}
+	if (["npm", "yarn", "pnpm", "pip", "brew"].includes(command)) {
+		const subcommand = nextSubcommand(tokens, commandIndex + 1, new Set(["--prefix", "--cwd", "-C"]))?.text.toLowerCase();
+		return subcommand ? PACKAGE_WRITE_COMMANDS.has(subcommand) : false;
+	}
+	if (command === "apt" || command === "apt-get") {
+		const subcommand = nextSubcommand(tokens, commandIndex + 1, new Set())?.text.toLowerCase();
+		return subcommand ? ["install", "remove", "purge", "update", "upgrade"].includes(subcommand) : false;
+	}
+	if (command === "systemctl") {
+		const subcommand = nextSubcommand(tokens, commandIndex + 1, new Set())?.text.toLowerCase();
+		return subcommand ? ["start", "stop", "restart", "enable", "disable"].includes(subcommand) : false;
+	}
+	if (command === "service") {
+		const action = nextWord(tokens, commandIndex + 2)?.text.toLowerCase();
+		return action ? ["start", "stop", "restart"].includes(action) : false;
+	}
+	if (command === "sed") {
+		return tokens.slice(commandIndex + 1).some((token) => !token.operator && (/^-[A-Za-z]*i/.test(token.text) || token.text === "--in-place"));
+	}
+	if (command === "perl") {
+		return tokens.slice(commandIndex + 1).some((token) => !token.operator && /^-[A-Za-z]*p[A-Za-z]*i/.test(token.text));
+	}
+	if (command === "find") {
+		return tokens.slice(commandIndex + 1).some((token) => !token.operator && token.text === "-delete");
+	}
+	return hasShellEval(tokens, commandIndex);
+}
+
+export function isSideEffectCommand(command: string): boolean {
+	const tokens = tokenizeShell(command);
+	if (tokens.some((token) => token.operator && (token.text === ">" || token.text === ">>"))) return true;
+
+	let expectsCommand = true;
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i];
+		if (token.operator) {
+			expectsCommand = COMMAND_SEPARATORS.has(token.text);
+			continue;
+		}
+		if (!expectsCommand) continue;
+		if (isAssignment(token.text) || COMMAND_PREFIXES.has(token.text.toLowerCase())) continue;
+		if (isCommandSideEffect(tokens, i)) return true;
+		expectsCommand = false;
+	}
+	return false;
 }
 
 export interface TodoItem {
@@ -183,17 +248,12 @@ export function cleanStepText(text: string): string {
 export function extractTodoItems(message: string): TodoItem[] {
 	const items: TodoItem[] = [];
 	const proposedPlanMatch = message.match(/<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i);
-	const headerMatch = message.match(/\*{0,2}Plan:\*{0,2}\s*\n/i);
-	if (!proposedPlanMatch && !headerMatch) return items;
+	const planSection = proposedPlanMatch?.[1] ?? extractLegacyPlanSection(message);
+	if (!planSection) return items;
 
-	const planSection = proposedPlanMatch?.[1] ?? message.slice(message.indexOf(headerMatch?.[0] ?? "") + (headerMatch?.[0].length ?? 0));
-	const numberedPattern = /^\s*(\d+)[.)]\s+\*{0,2}([^*\n]+)/gm;
-
-	for (const match of planSection.matchAll(numberedPattern)) {
-		const text = match[2]
-			.trim()
-			.replace(/\*{1,2}$/, "")
-			.trim();
+	const stepPattern = /^\s*(?:\d+[.)]|[-*]\s+\[[ xX]\])\s+(.+)$/gm;
+	for (const match of planSection.matchAll(stepPattern)) {
+		const text = match[1].trim();
 		if (text.length > 5 && !text.startsWith("`") && !text.startsWith("/") && !text.startsWith("-")) {
 			const cleaned = cleanStepText(text);
 			if (cleaned.length > 3) {
@@ -203,6 +263,40 @@ export function extractTodoItems(message: string): TodoItem[] {
 		}
 	}
 	return items;
+}
+
+function extractLegacyPlanSection(message: string): string | undefined {
+	const lines = message.split("\n");
+	let start = -1;
+	for (let i = 0; i < lines.length; i++) {
+		const normalized = lines[i]
+			.trim()
+			.replace(/^#{1,6}\s*/, "")
+			.replace(/^\*{1,2}|\*{1,2}$/g, "")
+			.replace(/:$/, "")
+			.trim()
+			.toLowerCase();
+		if (["plan", "implementation plan", "execution plan", "plan steps", "implementation steps", "steps"].includes(normalized)) {
+			start = i + 1;
+			break;
+		}
+	}
+	if (start < 0) return undefined;
+
+	const section: string[] = [];
+	for (let i = start; i < lines.length; i++) {
+		const line = lines[i];
+		const trimmed = line.trim();
+		const header = trimmed.replace(/^#{1,6}\s*/, "").replace(/^\*{1,2}|\*{1,2}$/g, "").replace(/:$/, "").trim().toLowerCase();
+		if (
+			section.length > 0 &&
+			(trimmed.startsWith("#") || ["assumptions", "risks", "verification", "files", "notes"].includes(header))
+		) {
+			break;
+		}
+		section.push(line);
+	}
+	return section.join("\n");
 }
 
 export function extractDoneSteps(message: string): number[] {

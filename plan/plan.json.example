@@ -4,8 +4,8 @@
             "provider": "anthropic",
             "model": "claude-4-opus",
             "thinking": "high",
-            "tools": ["read", "bash", "grep", "find", "ls", "questionnaire", "propose_plan"],
-            "context": "Use strong reasoning. Inspect first, ask high-impact clarifying questions when needed, and include explicit assumptions/defaults in the proposal. Do not edit files or call write-capable tools."
+            "tools": ["read", "bash", "edit", "write", "grep", "find", "ls", "questionnaire", "propose_plan"],
+            "context": "Use strong reasoning. Inspect first, ask high-impact clarifying questions when needed, and include explicit assumptions/defaults in the proposal. Do not edit files or run commands that change files, dependencies, git state, processes, or system state."
         },
         "execute": {
             "provider": "anthropic",
