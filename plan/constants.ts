@@ -1,4 +1,5 @@
-import type { PhaseName, PlanModeStateName, ApprovalTransition } from './types.js';
+import type { PhaseName, PlanModeStateName, ApprovalTransition, PlanEvent, TransitionResult, PlanProposal } from './types.js';
+import type { TodoItem } from './utils.js';
 
 export const PLAN_PROPOSAL_TOOL = 'propose_plan';
 export const PLAN_TASK_UPDATE_TOOL = 'plan_task_update';
@@ -7,8 +8,7 @@ export const NORMAL_MODE_TOOLS = ['read', 'bash', 'edit', 'write'];
 export const PLAN_MODE_TOOLS = [...NORMAL_MODE_TOOLS, 'grep', 'find', 'ls', 'questionnaire', PLAN_PROPOSAL_TOOL];
 export const EXECUTE_MODE_TOOLS = [...NORMAL_MODE_TOOLS, PLAN_TASK_UPDATE_TOOL];
 export const PLAN_MODE_WRITE_TOOLS = new Set(['edit', 'write', 'apply_patch']);
-export const APPROVAL_CHOICES = ['Execute plan', 'Refine planning', 'Edit plan'] as const;
-export const FORMAT_REPAIR_CHOICES = ['Refine the plan', 'Stay in plan mode', 'Exit plan mode'] as const;
+export const APPROVAL_CHOICES = ['Execute plan', 'View full plan', 'Edit plan', 'Quit plan'] as const;
 export const MAX_AUTO_CONTINUATIONS = 8;
 export const MAX_NO_PROGRESS_CONTINUATIONS = 2;
 
@@ -38,7 +38,7 @@ export const PLAN_PROPOSAL_PARAMETERS = {
 		assumptions: {
 			type: 'array',
 			items: { type: 'string' },
-			description: 'Explicit defaults or assumptions used when planning without asking.',
+			description: 'Low-risk defaults and why no material clarification was needed.',
 		},
 		risks: {
 			type: 'array',
@@ -90,11 +90,169 @@ export function transitionApproval(choice: string | undefined): ApprovalTransiti
 	if (choice === 'Execute plan') {
 		return { mode: 'executing', effect: 'start_execution' };
 	}
-	if (choice === 'Refine planning') {
-		return { mode: 'refining', effect: 'open_refinement' };
+	if (choice === 'View full plan') {
+		return { mode: 'approval', effect: 'view_plan' };
 	}
 	if (choice === 'Edit plan') {
 		return { mode: 'approval', effect: 'open_editor' };
 	}
+	if (choice === 'Quit plan') {
+		return { mode: 'normal', effect: 'quit_plan' };
+	}
 	return { mode: 'planning', effect: 'dismiss_approval' };
+}
+
+/**
+ * Central state machine. Returns the new mode and actions to execute.
+ * No side effects — callers execute the actions.
+ */
+export function transition(mode: PlanModeStateName, event: PlanEvent): TransitionResult {
+	switch (mode) {
+		case 'normal': {
+			if (event.type === 'TOGGLE') {
+				return {
+					mode: 'planning',
+					actions: [
+						{ type: 'reset_state', mode: 'planning', clearTodos: true },
+						{ type: 'apply_phase', phase: 'plan' },
+						{ type: 'notify', message: 'Plan mode enabled. Read-only tools active — inspect code, then propose a plan for approval.', level: 'info' },
+						{ type: 'persist' },
+					],
+				};
+			}
+			break;
+		}
+
+		case 'planning': {
+			if (event.type === 'TOGGLE') {
+				return {
+					mode: 'normal',
+					actions: [
+						{ type: 'reset_state', mode: 'normal', clearTodos: true },
+						{ type: 'apply_phase', phase: 'normal' },
+						{ type: 'notify', message: 'Plan mode disabled. Full access restored.', level: 'info' },
+						{ type: 'persist' },
+					],
+				};
+			}
+			if (event.type === 'PROPOSE') {
+				return {
+					mode: 'approval',
+					actions: [
+						{ type: 'persist' },
+						{ type: 'update_status' },
+						{ type: 'show_approval_ui', plan: event.plan },
+					],
+				};
+			}
+			if (event.type === 'BLOCKED_CMD') {
+				return {
+					mode: 'approval',
+					actions: [
+						{ type: 'persist' },
+						{ type: 'update_status' },
+						{ type: 'show_approval_ui' },
+					],
+				};
+			}
+			break;
+		}
+
+		case 'approval': {
+			if (event.type === 'APPROVAL_CHOICE') {
+				if (event.effect === 'start_execution') {
+					return {
+						mode: 'executing',
+						actions: [
+							{ type: 'apply_phase', phase: 'execute' },
+							{ type: 'persist' },
+							{ type: 'update_status' },
+						],
+					};
+				}
+				if (event.effect === 'quit_plan') {
+					return {
+						mode: 'normal',
+						actions: [
+							{ type: 'reset_state', mode: 'normal', clearTodos: true },
+							{ type: 'apply_phase', phase: 'normal' },
+							{ type: 'notify', message: 'Plan mode exited.', level: 'info' },
+							{ type: 'persist' },
+						],
+					};
+				}
+				if (event.effect === 'dismiss_approval') {
+					return {
+						mode: 'planning',
+						actions: [
+							{ type: 'persist' },
+							{ type: 'update_status' },
+						],
+					};
+				}
+				// open_editor handled by caller (needs async UI), then emits PLAN_EDITED
+			}
+			if (event.type === 'PLAN_EDITED') {
+				return {
+					mode: 'approval',
+					actions: [
+						{ type: 'persist' },
+						{ type: 'show_approval_ui', plan: event.plan },
+					],
+				};
+			}
+			break;
+		}
+
+		case 'executing': {
+			if (event.type === 'ALL_COMPLETE') {
+				return {
+					mode: 'normal',
+					actions: [
+						{ type: 'finish_execution', completed: true },
+					],
+				};
+			}
+			if (event.type === 'TASK_BLOCKED') {
+				return {
+					mode: 'normal',
+					actions: [
+						{ type: 'finish_execution', completed: false },
+					],
+				};
+			}
+			if (event.type === 'CONTINUE') {
+				return {
+					mode: 'executing',
+					actions: [
+						{ type: 'persist' },
+						{ type: 'update_status' },
+						{ type: 'send_handoff', todo: event.todo, reason: 'continue' },
+					],
+				};
+			}
+			if (event.type === 'NO_PROGRESS_RETRY') {
+				return {
+					mode: 'executing',
+					actions: [
+						{ type: 'persist' },
+						{ type: 'update_status' },
+						{ type: 'send_no_progress_continuation', todo: event.todo },
+					],
+				};
+			}
+			if (event.type === 'CONTINUATION_LIMIT') {
+				return {
+					mode: 'normal',
+					actions: [
+						{ type: 'finish_execution', completed: false },
+					],
+				};
+			}
+			break;
+		}
+	}
+
+	// Unhandled: no transition
+	return { mode, actions: [] };
 }

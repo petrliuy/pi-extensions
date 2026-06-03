@@ -32,10 +32,6 @@ export function todoFromBlockedCommand(blocked: PendingBlockedCommand): TodoItem
 	};
 }
 
-export function hasMalformedPlanSignal(text: string): boolean {
-	return text.includes('<proposed_plan') || text.includes('</proposed_plan>') || text.includes('Plan:');
-}
-
 export function normalizePlanText(text: unknown, field: string): string {
 	if (typeof text !== 'string' || text.trim().length === 0) {
 		throw new Error(`${field} must be a non-empty string.`);

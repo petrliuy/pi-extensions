@@ -13,6 +13,11 @@ export const DEFAULT_PROFILES: Record<PhaseName, PhaseProfile> = {
 		tools: PLAN_MODE_TOOLS,
 		context:
 			'Use stronger reasoning. Focus on analysis, risks, trade-offs, and an executable plan. Do not edit files.',
+		instructions: [],
+		planCommandAllow: {
+			exact: [],
+			prefixes: [],
+		},
 	},
 	execute: {
 		thinking: 'medium',

@@ -12,7 +12,6 @@ export interface PlanModeEntryData {
 	stage?: 'inspect' | 'plan';
 	pendingBlockedCommand?: PendingBlockedCommand;
 	pendingPlan?: PlanProposal;
-	formatRepairAttempted?: boolean;
 	continuationCount?: number;
 	noProgressContinuationCount?: number;
 }
@@ -59,10 +58,8 @@ export function resolveLegacyMode(data: PlanModeEntryData): PlanModeStateName {
 		? 'executing'
 		: data.mode ??
 			(data.enabled
-				? data.formatRepairAttempted
-					? 'format_repair'
-					: data.todos?.length
-						? 'approval'
-						: 'planning'
+				? data.todos?.length
+					? 'approval'
+					: 'planning'
 				: 'normal');
 }

@@ -1,22 +1,26 @@
 /**
- * Plan Mode Extension with Phase Profiles
+ * Plan Mode Extension with Centralized State Machine
  *
- * Adds deterministic phase routing on top of the existing plan mode:
- * - plan phase: broad tools with side-effect guards + optional high-reasoning model/provider
+ * State flow: normal → planning → approval → executing → normal
+ * - plan phase: broad tools with read-only bash allowlist + optional high-reasoning model/provider
  * - execute phase: full tools + optional cheaper/faster model/provider
  * - session restore: reapplies the active phase profile
+ *
+ * All state transitions go through the centralized transition() function in constants.ts.
+ * Event handlers emit events, transition() returns the new mode + actions, callers execute them.
  */
 
 import type { AgentMessage } from '@mariozechner/pi-agent-core';
 import type { AssistantMessage, TextContent } from '@mariozechner/pi-ai';
 import type { ExtensionAPI, ExtensionContext } from '@mariozechner/pi-coding-agent';
-import { Key } from '@mariozechner/pi-tui';
+import { Key, Text } from '@mariozechner/pi-tui';
 import type {
 	PlanModeStateName,
 	PlanProposal,
 	PlanProposalInput,
 	PlanRuntimeState,
 	PlanTaskUpdateInput,
+	TransitionAction,
 } from './types.js';
 import type { TodoItem } from './utils.js';
 import type { PlanModeEntryData } from './state.js';
@@ -25,7 +29,6 @@ import {
 	PLAN_TASK_UPDATE_TOOL,
 	PLAN_MODE_TOOLS,
 	APPROVAL_CHOICES,
-	FORMAT_REPAIR_CHOICES,
 	MAX_AUTO_CONTINUATIONS,
 	MAX_NO_PROGRESS_CONTINUATIONS,
 	PLAN_PROPOSAL_PARAMETERS,
@@ -33,15 +36,13 @@ import {
 	phaseForMode,
 	isPlanModeActive,
 	transitionApproval,
+	transition,
 } from './constants.js';
 import { readConfig, getProfile, getPlanModeTools, applyPhaseProfile } from './config.js';
 import { createPlanState, normalizeStoredTodoItems, normalizeStoredPlan, resolveLegacyMode } from './state.js';
-import { writeToolGuard, shellSideEffectGuard } from './guards.js';
+import { writeToolGuard, shellPlanGuard } from './guards.js';
 import {
-	isAssistantMessage,
-	getTextContent,
 	todoFromBlockedCommand,
-	hasMalformedPlanSignal,
 	normalizePlanText,
 	normalizePlanProposal,
 	todosFromPlanProposal,
@@ -51,32 +52,44 @@ import {
 	formatEditablePlan,
 	parseEditablePlan,
 } from './format.js';
-import { extractTodoItems, markCompletedSteps } from './utils.js';
+
+/** Search/text-matching commands where exit code 1 means "no matches", not an error. */
+const SEARCH_EXIT_ONE_RE = /\b(rg|grep|ag|ack|git grep)\b/;
 
 export default function planModeExtension(pi: ExtensionAPI): void {
 	const config = readConfig();
 	let state = createPlanState() as PlanRuntimeState;
+	let working = false;
 
 	pi.registerFlag('plan', {
-		description: 'Start in plan mode (side-effect guarded planning)',
+		description: 'Start in plan mode (read-only planning)',
 		type: 'boolean',
 		default: false,
 	});
+
+	// ── Status & widget ────────────────────────────────────────────
 
 	function updateStatus(ctx: ExtensionContext): void {
 		const phaseProfile = getProfile(config, phaseForMode(state.mode));
 		const modelLabel =
 			phaseProfile.provider && phaseProfile.model ? ` ${phaseProfile.provider}/${phaseProfile.model}` : '';
 		const thinkingLabel = phaseProfile.thinking ? ` ${phaseProfile.thinking}` : '';
+		const workIndicator = working ? '⏳ ' : '';
 
 		if (state.mode === 'executing' && state.todos.length > 0) {
 			const completed = state.todos.filter((t) => t.status === 'completed').length;
 			ctx.ui.setStatus(
 				'plan-mode',
-				ctx.ui.theme.fg('accent', `📋 ${completed}/${state.todos.length}${modelLabel}${thinkingLabel}`),
+				ctx.ui.theme.fg(
+					'accent',
+					`${workIndicator}📋 ${completed}/${state.todos.length}${modelLabel}${thinkingLabel}`,
+				),
 			);
 		} else if (isPlanModeActive(state.mode)) {
-			ctx.ui.setStatus('plan-mode', ctx.ui.theme.fg('warning', `⏸ plan${modelLabel}${thinkingLabel}`));
+			ctx.ui.setStatus(
+				'plan-mode',
+				ctx.ui.theme.fg('warning', `${workIndicator}⏸ plan${modelLabel}${thinkingLabel}`),
+			);
 		} else {
 			ctx.ui.setStatus('plan-mode', undefined);
 		}
@@ -103,6 +116,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	// ── State helpers ──────────────────────────────────────────────
+
 	async function enterMode(ctx: ExtensionContext, mode: PlanModeStateName): Promise<void> {
 		state.mode = mode;
 		await applyPhaseProfile(pi, ctx, config, phaseForMode(mode));
@@ -116,6 +131,64 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			todos,
 		} as PlanRuntimeState;
 	}
+
+	function persistState(): void {
+		pi.appendEntry('plan-mode', {
+			schemaVersion: state.schemaVersion,
+			mode: state.mode,
+			enabled: isPlanModeActive(state.mode),
+			todos: state.todos,
+			executing: state.mode === 'executing',
+			phase: phaseForMode(state.mode),
+			pendingBlockedCommand: state.pendingBlockedCommand,
+			pendingPlan: state.pendingPlan,
+			continuationCount: state.continuationCount,
+			noProgressContinuationCount: state.noProgressContinuationCount,
+		});
+	}
+
+	function remainingTodos(): TodoItem[] {
+		return state.todos.filter((todo) => todo.status !== 'completed');
+	}
+
+	// ── Action executor ────────────────────────────────────────────
+	// Executes actions returned by the centralized transition() function.
+
+	async function executeActions(ctx: ExtensionContext, actions: TransitionAction[]): Promise<void> {
+		for (const action of actions) {
+			switch (action.type) {
+				case 'apply_phase':
+					await enterMode(ctx, state.mode);
+					break;
+				case 'notify':
+					ctx.ui.notify(action.message, action.level);
+					break;
+				case 'reset_state':
+					resetPlanState(action.mode, action.clearTodos);
+					break;
+				case 'persist':
+					persistState();
+					break;
+				case 'update_status':
+					updateStatus(ctx);
+					break;
+				case 'send_handoff':
+					sendExecutionHandoff(action.todo, action.reason);
+					break;
+				case 'send_no_progress_continuation':
+					sendNoProgressContinuation(action.todo);
+					break;
+				case 'finish_execution':
+					await finishExecution(ctx, action.completed);
+					break;
+				case 'show_approval_ui':
+					await promptForPlanExecution(ctx, action.plan);
+					break;
+			}
+		}
+	}
+
+	// ── Domain functions ───────────────────────────────────────────
 
 	async function finishExecution(ctx: ExtensionContext, completed: boolean): Promise<void> {
 		if (completed && state.todos.length > 0) {
@@ -144,20 +217,13 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		persistState();
 	}
 
-	async function exitPlanMode(ctx: ExtensionContext, notify?: string): Promise<void> {
-		resetPlanState('normal');
-		await enterMode(ctx, 'normal');
-		if (notify) {
-			ctx.ui.notify(notify, 'info');
-		}
-		persistState();
-	}
-
 	async function togglePlanMode(ctx: ExtensionContext): Promise<void> {
 		if (state.mode === 'executing') {
 			resetPlanState('normal');
 			await enterMode(ctx, 'normal');
-			ctx.ui.notify('Previous plan execution state cleared. Starting a new plan.', 'info');
+			ctx.ui.notify('Previous plan execution state cleared. Plan mode exited.', 'info');
+			persistState();
+			return;
 		}
 
 		const nextMode: PlanModeStateName = isPlanModeActive(state.mode) ? 'normal' : 'planning';
@@ -165,7 +231,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 		if (nextMode === 'planning') {
 			await enterMode(ctx, 'planning');
-			ctx.ui.notify(`Plan mode enabled. Tools: ${getPlanModeTools(getProfile(config, 'plan')).join(', ')}`);
+			ctx.ui.notify(
+				'Plan mode enabled. Read-only tools active — inspect code, then propose a plan for approval.',
+			);
 		} else {
 			await enterMode(ctx, 'normal');
 			ctx.ui.notify('Plan mode disabled. Full access restored.');
@@ -173,87 +241,24 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		persistState();
 	}
 
-	function persistState(): void {
-		pi.appendEntry('plan-mode', {
-			schemaVersion: state.schemaVersion,
-			mode: state.mode,
-			enabled: isPlanModeActive(state.mode),
-			todos: state.todos,
-			executing: state.mode === 'executing',
-			phase: phaseForMode(state.mode),
-			pendingBlockedCommand: state.pendingBlockedCommand,
-			pendingPlan: state.pendingPlan,
-			continuationCount: state.continuationCount,
-			noProgressContinuationCount: state.noProgressContinuationCount,
-		});
-	}
-
-	function getCurrentPlanForRefinement(): PlanProposal | undefined {
-		if (state.pendingPlan) return state.pendingPlan;
-		if (state.todos.length === 0) return undefined;
-		return normalizePlanProposal({
-			title: 'Current plan',
-			summary: 'Current extracted plan steps.',
-			steps: state.todos.map((todo) => todo.text),
-			assumptions: [],
-		});
-	}
-
-	function sendRefinementMessage(refinement: string, mode: 'supplement' | 'redefine', plan?: PlanProposal): void {
-		const message = refinement.trim();
-		if (message) {
-			const currentPlanText = plan
-				? `\n\nCurrent plan:\n${formatEditablePlan(plan)}`
-				: '\n\nCurrent plan: not available from structured state. Use the latest conversation context as the plan baseline.';
-			const modeText =
-				mode === 'supplement'
-					? 'Supplement the current plan: preserve its intent and incorporate the refinement as additions or targeted adjustments.'
-					: 'Redefine the plan: treat the refinement as replacing the current direction where it conflicts.';
-			pi.sendUserMessage(
-				`Refine the Plan Mode proposal.\n\nMode: ${modeText}${currentPlanText}\n\nUser refinement:\n${message}\n\nReturn one complete revised plan by calling propose_plan. Do not execute, edit files, or provide a partial diff while refining.`,
-				{ deliverAs: 'followUp' },
-			);
-		}
-	}
-
-	async function promptForPlanRefinement(ctx: ExtensionContext): Promise<void> {
-		state.mode = 'refining';
-		persistState();
-		const modeChoice = await ctx.ui.select('How should this refinement change the plan?', [
-			'Supplement current plan',
-			'Redefine plan',
-		]);
-		if (!modeChoice) {
-			await enterMode(ctx, 'approval');
-			persistState();
-			return;
-		}
-
-		const mode: 'supplement' | 'redefine' = modeChoice === 'Redefine plan' ? 'redefine' : 'supplement';
-		const prompt = mode === 'redefine' ? 'Redefine the plan:' : 'Supplement the plan:';
-		const refinement = await ctx.ui.editor(prompt, '');
-		if (!refinement?.trim()) {
-			await enterMode(ctx, 'approval');
-			persistState();
-			return;
-		}
-		state.mode = 'planning';
-		persistState();
-		sendRefinementMessage(refinement, mode, getCurrentPlanForRefinement());
-	}
-
-	function remainingTodos(): TodoItem[] {
-		return state.todos.filter((todo) => todo.status !== 'completed');
-	}
-
 	function sendExecutionHandoff(firstTodo: TodoItem | undefined, reason: 'start' | 'continue' = 'start'): void {
+		const updateReminder =
+			'IMPORTANT: You MUST call plan_task_update to report progress for every task:' +
+			'\n  - Mark a task in_progress when you start working on it.' +
+			'\n  - Mark a task completed only after it is fully implemented and verified.' +
+			'\n  - If a task cannot proceed, mark it blocked with a short reason.' +
+			'\n  - Failure to call plan_task_update will cause the plan to stall and retry.';
 		const modeText = 'Execute autonomously while reporting structured task progress.';
-		const execMessage =
-			firstTodo?.source === 'blocked_command' && firstTodo.command
-				? `Execute the captured Plan Mode command, then verify the result:\n\n\`\`\`bash\n${firstTodo.command}\n\`\`\``
-				: reason === 'continue'
-				  ? `Continue executing the approved plan.\n\nMode: ${modeText}\n\nNext task: ${firstTodo ? formatTodoLine(firstTodo) : 'the first remaining task'}`
-				  : `Execute the approved plan.\n\nMode: ${modeText}\n\nStart with: ${firstTodo ? formatTodoLine(firstTodo) : 'the first task'}`;
+		let execMessage: string;
+
+		if (firstTodo?.source === 'blocked_command' && firstTodo.command) {
+			execMessage = `Execute the captured Plan Mode command, then verify the result:\n\n\`\`\`bash\n${firstTodo.command}\n\`\`\`\n\n${updateReminder}`;
+		} else if (reason === 'continue') {
+			execMessage = `Continue executing the approved plan.\n\nMode: ${modeText}\n\nNext task: ${firstTodo ? formatTodoLine(firstTodo) : 'the first remaining task'}\n\n${updateReminder}`;
+		} else {
+			execMessage = `Execute the approved plan.\n\nMode: ${modeText}\n\nStart with: ${firstTodo ? formatTodoLine(firstTodo) : 'the first task'}\n\n${updateReminder}`;
+		}
+
 		pi.sendMessage(
 			{ customType: 'plan-mode-execute', content: execMessage, display: true },
 			{ triggerTurn: true, deliverAs: 'followUp' },
@@ -271,87 +276,113 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		);
 	}
 
-	async function promptForPlanExecution(ctx: ExtensionContext, plan?: PlanProposal): Promise<void> {
+	async function startPlanExecution(ctx: ExtensionContext): Promise<void> {
+		state.continuationCount = 0;
+		state.noProgressContinuationCount = 0;
+		state.currentAgentProgressCount = 0;
+		state.pendingBlockedCommand = undefined;
+
+		working = true;
+		updateStatus(ctx);
+
+		const result = transition(state.mode, { type: 'APPROVAL_CHOICE', effect: 'start_execution' });
+		state.mode = result.mode;
+		await executeActions(ctx, result.actions);
+
+		sendExecutionHandoff(state.todos[0]);
+	}
+
+	/**
+	 * Show the approval UI. Called when entering the approval state.
+	 * Handles Execute/View/Edit/Dismiss/Quit choices through the centralized state machine.
+	 */
+	function formatApprovalPlanContent(plan?: PlanProposal): string {
+		if (plan) return formatPlanProposal(plan);
+		const todoListText = state.todos.map((t, i) => `${i + 1}. ☐ ${t.text}`).join('\n');
+		return `**Plan Steps (${state.todos.length}):**\n\n${todoListText}`;
+	}
+
+	async function promptForPlanExecution(ctx: ExtensionContext, plan?: PlanProposal, displayProposal = true): Promise<void> {
 		state.mode = 'approval';
-		const proposalContent = plan ? formatPlanProposal(plan) : undefined;
-		if (plan) {
-			pi.sendMessage(
-				{
-					customType: 'plan-proposal',
-					content: proposalContent ?? formatPlanProposal(plan),
-					display: true,
-					details: plan,
-				},
-				{ triggerTurn: false },
-			);
-		} else {
-			const todoListText = state.todos.map((t, i) => `${i + 1}. ☐ ${t.text}`).join('\n');
-			pi.sendMessage(
-				{
-					customType: 'plan-todo-list',
-					content: `**Plan Steps (${state.todos.length}):**\n\n${todoListText}`,
-					display: true,
-				},
-				{ triggerTurn: false },
-			);
+		const proposalContent = formatApprovalPlanContent(plan);
+		if (displayProposal) {
+			if (plan) {
+				pi.sendMessage(
+					{
+						customType: 'plan-proposal',
+						content: proposalContent,
+						display: true,
+						details: plan,
+					},
+					{ triggerTurn: false },
+				);
+			} else {
+				pi.sendMessage(
+					{
+						customType: 'plan-todo-list',
+						content: proposalContent,
+						display: true,
+					},
+					{ triggerTurn: false },
+				);
+			}
 		}
 
+		ctx.ui.setWorkingVisible(false);
+		working = false;
+		updateStatus(ctx);
 		const choice = await ctx.ui.select('Plan proposal - what next?', [...APPROVAL_CHOICES]);
 
-		const firstTodo = state.todos[0];
-		const transition = transitionApproval(choice);
+		const approvalTransition = transitionApproval(choice);
 
-		if (transition.effect === 'start_execution') {
-			state.mode = 'executing';
-			state.continuationCount = 0;
-			state.noProgressContinuationCount = 0;
-			state.currentAgentProgressCount = 0;
-			state.pendingBlockedCommand = undefined;
-			await enterMode(ctx, 'executing');
-			persistState();
-
-			sendExecutionHandoff(firstTodo);
-		} else if (transition.effect === 'open_editor') {
+		if (approvalTransition.effect === 'start_execution') {
+			await startPlanExecution(ctx);
+		} else if (approvalTransition.effect === 'view_plan') {
+			ctx.ui.setWorkingVisible(false);
+			working = false;
+			updateStatus(ctx);
+			await ctx.ui.editor('View full plan (close to return):', proposalContent);
+			await promptForPlanExecution(ctx, plan, false);
+		} else if (approvalTransition.effect === 'open_editor') {
 			const basePlan =
 				state.pendingPlan ??
 				normalizePlanProposal({
 					title: 'Plan',
-					summary: 'Edited legacy plan.',
+					summary: 'Edited plan.',
 					steps: state.todos.map((todo) => todo.text),
 					assumptions: [],
 				});
 			const original = formatEditablePlan(basePlan);
+			ctx.ui.setWorkingVisible(false);
+			working = false;
+			updateStatus(ctx);
 			const edited = await ctx.ui.editor('Edit plan:', original);
 			if (edited?.trim() && edited !== original) {
-				state.pendingPlan = parseEditablePlan(edited, basePlan);
-				state.todos = todosFromPlanProposal(state.pendingPlan);
+				const editedPlan = parseEditablePlan(edited, basePlan);
+				state.pendingPlan = editedPlan;
+				state.todos = todosFromPlanProposal(editedPlan);
 				persistState();
-				await promptForPlanExecution(ctx, state.pendingPlan);
+				await startPlanExecution(ctx);
 				return;
 			}
-			state.mode = 'approval';
+			// Editor cancelled — stay in approval
+			working = false;
 			updateStatus(ctx);
 			persistState();
-		} else if (transition.effect === 'open_refinement') {
-			await promptForPlanRefinement(ctx);
+		} else if (approvalTransition.effect === 'quit_plan') {
+			working = false;
+			updateStatus(ctx);
+			const result = transition(state.mode, { type: 'APPROVAL_CHOICE', effect: 'quit_plan' });
+			state.mode = result.mode;
+			await executeActions(ctx, result.actions);
 		} else {
-			state.mode = transition.mode;
-			persistState();
+			// dismiss (Escape/Ctrl+C)
+			working = false;
 			updateStatus(ctx);
+			const result = transition(state.mode, { type: 'APPROVAL_CHOICE', effect: 'dismiss_approval' });
+			state.mode = result.mode;
+			await executeActions(ctx, result.actions);
 		}
-	}
-
-	function requestPlanFormatRepair(): void {
-		state.mode = 'format_repair';
-		persistState();
-		pi.sendMessage(
-			{
-				customType: 'plan-format-repair',
-				content: `Plan Mode could not extract executable steps from the previous response. Re-output the plan only, using exactly one <proposed_plan> block with numbered top-level implementation steps. Do not run tools, do not suggest manual commands, and do not include extra explanation outside the block.`,
-				display: false,
-			},
-			{ triggerTurn: true },
-		);
 	}
 
 	function updateTaskStatus(update: PlanTaskUpdateInput): TodoItem {
@@ -390,8 +421,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		promptSnippet: 'Submit a structured Plan Mode proposal for implementation or refactor requests.',
 		promptGuidelines: [
 			'Use propose_plan when Plan Mode needs an executable implementation, fix, refactor, or verification plan.',
+			'Before calling propose_plan, ask the user about any material decision that cannot be resolved from repository evidence.',
 			'Put key code findings, constraints, tradeoffs, and execution-critical context in summary, assumptions, risks, verification, and files.',
-			'Include explicit assumptions/defaults when planning without asking a clarifying question.',
+			'Use assumptions only for low-risk implementation defaults; do not use assumptions to bypass unclear user intent.',
+			'If no question was asked, explain in assumptions why no material clarification was needed.',
 			'Do not ask the user to reply yes or no in chat for execution approval; propose_plan will trigger the harness approval UI.',
 		],
 		parameters: PLAN_PROPOSAL_PARAMETERS,
@@ -403,21 +436,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const plan = normalizePlanProposal(params);
 			state.pendingPlan = plan;
 			state.todos = todosFromPlanProposal(plan);
-			state.mode = 'approval';
 			state.pendingBlockedCommand = undefined;
-			persistState();
 
-			if (ctx.hasUI) {
-				await promptForPlanExecution(ctx, plan);
-			}
+			const result = transition(state.mode, { type: 'PROPOSE', plan });
+			state.mode = result.mode;
+			await executeActions(ctx, result.actions);
 
 			return {
 				content: [
 					{
 						type: 'text',
-						text: ctx.hasUI
-							? 'Structured plan submitted to Plan Mode.'
-							: 'Structured plan submitted.',
+						text: ctx.hasUI ? 'Structured plan submitted to Plan Mode.' : 'Structured plan submitted.',
 					},
 				],
 				details: { plan, todos: state.todos },
@@ -446,21 +475,23 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			persistState();
 			updateStatus(ctx);
 			return {
-				content: [
-					{
-						type: 'text',
-						text: `${task.id} is ${task.status}.`,
-					},
-				],
+				content: [],
 				details: { task },
 			};
+		},
+		renderShell: 'self',
+		renderCall() {
+			return new Text('', 0, 0);
+		},
+		renderResult() {
+			return new Text('', 0, 0);
 		},
 	});
 
 	// ── Commands & shortcuts ───────────────────────────────────────
 
 	pi.registerCommand('plan', {
-		description: 'Toggle plan mode (side-effect guarded planning)',
+		description: 'Toggle plan mode (read-only planning)',
 		handler: async (_args, ctx) => togglePlanMode(ctx),
 	});
 
@@ -472,7 +503,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			const list = state.todos
-				.map((item, i) => `${i + 1}. ${item.status === 'completed' ? '✓' : item.status === 'blocked' ? '!' : '○'} ${item.id} ${item.text}`)
+				.map(
+					(item, i) =>
+						`${i + 1}. ${item.status === 'completed' ? '✓' : item.status === 'blocked' ? '!' : '○'} ${item.id} ${item.text}`,
+				)
 				.join('\n');
 			ctx.ui.notify(`Plan Progress:\n${list}`, 'info');
 		},
@@ -485,7 +519,29 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	// ── Event handlers ─────────────────────────────────────────────
 
-	pi.on('tool_call', async (event) => {
+	// Suppress error display for search commands that exit with code 1 (no matches).
+	pi.on('tool_result', async (event) => {
+		if (event.toolName !== 'bash' || !event.isError) return;
+		const command = event.input?.command as string | undefined;
+		if (!command || !SEARCH_EXIT_ONE_RE.test(command)) return;
+
+		// Check that the error is specifically "exit code 1" — higher codes are real errors.
+		const hasExitOne = event.content.some(
+			(c) => c.type === 'text' && /Command exited with code 1$/.test((c as { text: string }).text),
+		);
+		if (!hasExitOne) return;
+
+		return {
+			content: event.content.map((c) => {
+				if (c.type !== 'text') return c;
+				const text = (c as { text: string }).text.replace(/\n\nCommand exited with code 1$/, '');
+				return { ...c, text };
+			}),
+			isError: false,
+		};
+	});
+
+	pi.on('tool_call', async (event, ctx) => {
 		if (!isPlanModeActive(state.mode)) return;
 
 		const writeDecision = writeToolGuard(event.toolName);
@@ -496,9 +552,18 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		if (event.toolName !== 'bash') return;
 
 		const command = event.input.command as string;
-		const shellDecision = shellSideEffectGuard(command);
+		const profile = getProfile(config, 'plan');
+		const shellDecision = shellPlanGuard(command, profile.planCommandAllow);
 		if (shellDecision) {
-			if (!state.pendingBlockedCommand && shellDecision.blockedCommand) {
+			if (ctx.hasUI) {
+				const approved = await ctx.ui.confirm(
+					'Run non-whitelisted Plan Mode command?',
+					`Plan Mode is read-only by default. This bash command is not in the built-in allowlist or your manual allowlist:\n\n${command}\n\nApprove only if this is an inspection command. Commands that may change local or external state belong in the proposal and should run only after execution approval.`,
+				);
+				if (approved) return;
+			}
+
+			if (ctx.hasUI && !state.pendingBlockedCommand && shellDecision.blockedCommand) {
 				state.pendingBlockedCommand = shellDecision.blockedCommand;
 				persistState();
 			}
@@ -549,6 +614,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		const phase = phaseForMode(state.mode);
 		const profile = getProfile(config, phase);
 		const phaseContext = profile.context ? `\n\n[PHASE PROFILE: ${phase}]\n${profile.context}` : '';
+		const supplementalInstructions = profile.instructions?.length
+			? `\n\n[SUPPLEMENTAL PLAN INSTRUCTIONS]\n${profile.instructions.map((item) => `- ${item}`).join('\n')}`
+			: '';
 		const activePlanTools = phase === 'plan' ? getPlanModeTools(profile) : (profile.tools ?? PLAN_MODE_TOOLS);
 
 		if (isPlanModeActive(state.mode)) {
@@ -556,30 +624,35 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				message: {
 					customType: 'plan-mode-context',
 					content: `[PLAN MODE ACTIVE]
-You are in plan mode - a side-effect guarded planning mode for safe code analysis.
+You are in Plan Mode: a read-only planning mode for inspection, questions, and executable proposals.
 
 Restrictions:
 - Available tools: ${activePlanTools.join(', ')}
-- You CANNOT modify files, repositories, dependencies, services, or external state.
-- You CANNOT call edit, write, apply_patch, or any other write-capable tool while Plan Mode is active.
-- Bash commands that may change files, dependencies, git state, processes, or system state are blocked.
+- Default to read-only inspection. Do not intentionally change local or external state.
+- Write-capable tools are not allowed while Plan Mode is active.
+- Built-in read-only bash commands and manually allowlisted commands may run directly.
+- Non-allowlisted bash confirmation is only for commands you believe are read-only inspection commands.
 - If the user asks you to implement, edit, execute, continue, or apply changes while plan mode is active, treat that as a request to plan the execution. Do not attempt to execute it.
-- Do not try write-capable shell commands such as perl -pi, python scripts that write files, sed -i, cp, mv, tee, or shell redirection.
+- Commands that may change local or external state belong in the proposal and should run only after execution approval.
+- If a useful check may write generated files, caches, build artifacts, or external state, include it in propose_plan.verification instead of running it in Plan Mode.
+- If a recurring read-only command is blocked, mention that it can be added to profiles.plan.planCommandAllow in ~/.pi/agent/plan.json.
 - If the user wants to proceed after a plan exists, use propose_plan so the approval UI can start execution automatically. Do not ask for a yes/no chat reply and do not tell them to apply shell commands manually.
 
 Workflow:
 1. Inspect the relevant code and environment without side effects.
 2. Identify intent, success criteria, scope, constraints, current state, and key tradeoffs.
-3. Ask when a high-impact preference or requirement cannot be derived from repository context:
-   - Use the questionnaire tool. Provide 2-4 concrete options plus a "Custom / Other" option.
-   - After receiving answers, incorporate the decisions into your approach.
-4. If you proceed without asking, state the default assumptions explicitly in propose_plan.assumptions.
+3. Apply the Clarification Gate before proposing:
+   - Ask the user when any material decision cannot be resolved from repository evidence.
+   - Material decisions include scope, goal, success criteria, product intent, risk tolerance, execution strategy, architecture boundary, data/user impact, or rollout choice.
+   - Use the questionnaire tool for clarification. Provide 2-4 concrete options plus a "Custom / Other" option.
+   - Do not replace unclear user intent with assumptions.
+4. Proceed without asking only when remaining uncertainty is low-risk, local, reversible, and supported by repository evidence. In propose_plan.assumptions, explain why clarification was not needed.
 
 Once the approach is clear for a fix, change, implementation, or refactor request, call propose_plan with:
 - title: short title
 - summary: brief summary, including key code findings, constraints, and implementation judgment needed during execution
 - steps: ordered implementation steps
-- assumptions: explicit defaults or assumptions, especially for any skipped questions
+- assumptions: low-risk defaults and the reason clarification was not needed, if no question was asked
 - verification: verification commands or scenarios
 - risks: optional risk notes
 - files: optional likely touched files or modules
@@ -588,7 +661,7 @@ Do not ask the user "should I apply this?" in plain text. The propose_plan tool 
 
 For pure analysis tasks, respond directly with findings, risks, trade-offs, and recommendations, without calling propose_plan.
 
-Do NOT attempt to make changes - just describe what you would do.${phaseContext}`,
+Do NOT attempt to make changes - just describe what you would do.${phaseContext}${supplementalInstructions}`,
 					display: false,
 				},
 			};
@@ -608,48 +681,39 @@ Remaining steps:
 ${todoList}
 
 Execute each step in order.
-Use plan_task_update when a task starts, completes, or becomes blocked.
-Only mark a task completed after it has been fully implemented and minimally verified.
-Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the canonical progress protocol.${phaseContext}`,
+
+MANDATORY: You MUST call plan_task_update to report progress for every task:
+- Mark a task in_progress when you start working on it.
+- Mark a task completed only after it is fully implemented and verified.
+- If a task cannot proceed, mark it blocked with a short reason.
+- Failure to call plan_task_update will cause the plan to stall and retry.${phaseContext}`,
 					display: false,
 				},
 			};
 		}
 	});
 
-	pi.on('turn_end', async (event, ctx) => {
-		if (state.mode !== 'executing' || state.todos.length === 0) return;
-		if (!isAssistantMessage(event.message)) return;
-
-		const text = getTextContent(event.message);
-		const completed = markCompletedSteps(text, state.todos);
-		if (completed > 0) {
-			state.currentAgentProgressCount += completed;
-			state.noProgressContinuationCount = 0;
-			updateStatus(ctx);
-		}
-		if (state.todos.length > 0 && state.todos.every((t) => t.status === 'completed')) {
-			await finishExecution(ctx, true);
-			return;
-		}
-		persistState();
-	});
-
-	pi.on('agent_end', async (event, ctx) => {
+	pi.on('agent_end', async (_event, ctx) => {
+		// ── Execution continuation logic ──
 		if (state.mode === 'executing' && state.todos.length > 0) {
 			if (state.todos.every((t) => t.status === 'completed')) {
-				await finishExecution(ctx, true);
+				const result = transition(state.mode, { type: 'ALL_COMPLETE' });
+				state.mode = result.mode;
+				await executeActions(ctx, result.actions);
 				return;
 			}
 
 			const remaining = remainingTodos();
+
 			if (state.todos.some((todo) => todo.status === 'blocked')) {
 				const blocked = state.todos.filter((todo) => todo.status === 'blocked');
 				ctx.ui.notify(
 					`Plan execution blocked: ${blocked.length} task(s) blocked. Run /plan to create a revised plan.`,
 					'warning',
 				);
-				await finishExecution(ctx, false);
+				const result = transition(state.mode, { type: 'TASK_BLOCKED' });
+				state.mode = result.mode;
+				await executeActions(ctx, result.actions);
 				return;
 			}
 
@@ -657,8 +721,9 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
 				if (state.noProgressContinuationCount < MAX_NO_PROGRESS_CONTINUATIONS) {
 					state.noProgressContinuationCount += 1;
 					state.currentAgentProgressCount = 0;
-					persistState();
-					sendNoProgressContinuation(remaining[0]);
+					const result = transition(state.mode, { type: 'NO_PROGRESS_RETRY', todo: remaining[0] });
+					state.mode = result.mode;
+					await executeActions(ctx, result.actions);
 					return;
 				}
 
@@ -671,7 +736,9 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
 					remaining[0].completed = false;
 					remaining[0].message = `No structured task progress was reported after ${MAX_NO_PROGRESS_CONTINUATIONS} retries.`;
 				}
-				await finishExecution(ctx, false);
+				const result = transition(state.mode, { type: 'TASK_BLOCKED' });
+				state.mode = result.mode;
+				await executeActions(ctx, result.actions);
 				return;
 			}
 
@@ -685,66 +752,28 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
 					remaining[0].completed = false;
 					remaining[0].message = `Automatic continuation limit reached with ${remaining.length} remaining task(s).`;
 				}
-				await finishExecution(ctx, false);
+				const result = transition(state.mode, { type: 'CONTINUATION_LIMIT' });
+				state.mode = result.mode;
+				await executeActions(ctx, result.actions);
 				return;
 			}
 
 			state.continuationCount += 1;
 			state.noProgressContinuationCount = 0;
 			state.currentAgentProgressCount = 0;
-			persistState();
-			sendExecutionHandoff(remaining[0], 'continue');
+			const result = transition(state.mode, { type: 'CONTINUE', todo: remaining[0] });
+			state.mode = result.mode;
+			await executeActions(ctx, result.actions);
 			return;
 		}
 
-		if (!isPlanModeActive(state.mode) || !ctx.hasUI) return;
-		if (state.mode === 'approval' || state.mode === 'refining') return;
-
-		const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
-		const lastAssistantText = lastAssistant ? getTextContent(lastAssistant) : '';
-		const extracted = lastAssistantText ? extractTodoItems(lastAssistantText) : [];
-		let shouldOpenApproval = false;
-		if (extracted.length > 0) {
-			state.todos = extracted;
-			state.mode = 'approval';
-			state.pendingBlockedCommand = undefined;
-			state.pendingPlan = undefined;
-			shouldOpenApproval = true;
-			persistState();
-		} else if (state.pendingBlockedCommand) {
+		// ── Blocked command handoff (planning phase) ──
+		if (isPlanModeActive(state.mode) && state.mode !== 'approval' && state.pendingBlockedCommand && ctx.hasUI) {
 			state.todos = [todoFromBlockedCommand(state.pendingBlockedCommand)];
-			state.mode = 'approval';
+			const result = transition(state.mode, { type: 'BLOCKED_CMD' });
+			state.mode = result.mode;
 			state.pendingBlockedCommand = undefined;
-			shouldOpenApproval = true;
-			persistState();
-		} else if (state.mode !== 'format_repair' && hasMalformedPlanSignal(lastAssistantText)) {
-			requestPlanFormatRepair();
-			return;
-		}
-
-		if (state.todos.length === 0) {
-			if (state.mode === 'format_repair') {
-				state.mode = 'planning';
-				persistState();
-				ctx.ui.notify(
-					'Plan Mode could not extract executable steps. Refine the plan, submit a structured plan, or exit Plan Mode.',
-					'warning',
-				);
-				const choice = await ctx.ui.select('Plan format not recognized', [...FORMAT_REPAIR_CHOICES]);
-				if (choice === 'Refine the plan') {
-					await promptForPlanRefinement(ctx);
-				} else if (choice === 'Exit plan mode') {
-					await exitPlanMode(ctx, 'Plan mode exited.');
-				} else if (!choice) {
-					state.mode = 'planning';
-					persistState();
-				}
-			}
-			return;
-		}
-
-		if (shouldOpenApproval) {
-			await promptForPlanExecution(ctx);
+			await executeActions(ctx, result.actions);
 		}
 	});
 
@@ -782,24 +811,15 @@ Legacy [DONE:n] markers are accepted as fallback, but plan_task_update is the ca
 			};
 		}
 
-		const isResume = planModeEntry !== undefined;
-		if (isResume && state.mode === 'executing' && state.todos.length > 0) {
-			const messages: AssistantMessage[] = [];
-			for (let i = planModeEntryIndex + 1; i < entries.length; i++) {
-				const entry = entries[i];
-				if (
-					entry.type === 'message' &&
-					'message' in entry &&
-					isAssistantMessage(entry.message as AgentMessage)
-				) {
-					messages.push(entry.message as AssistantMessage);
-				}
-			}
-			const allText = messages.map(getTextContent).join('\n');
-			markCompletedSteps(allText, state.todos);
+		// Migrate legacy format_repair mode to planning on restore
+		if (state.mode === ('format_repair' as string)) {
+			state.mode = 'planning';
 		}
 
-		if (state.mode === 'executing' && (state.todos.length === 0 || state.todos.every((todo) => todo.status === 'completed'))) {
+		if (
+			state.mode === 'executing' &&
+			(state.todos.length === 0 || state.todos.every((todo) => todo.status === 'completed'))
+		) {
 			resetPlanState('normal');
 			persistState();
 		}

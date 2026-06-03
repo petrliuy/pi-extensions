@@ -1,11 +1,38 @@
-import type { TodoItem } from './utils.js';
+import type { CommandAllowlist, TodoItem } from './utils.js';
 
 export type PhaseName = 'plan' | 'execute' | 'normal';
-export type PlanModeStateName = 'normal' | 'planning' | 'approval' | 'refining' | 'executing' | 'format_repair';
+export type PlanModeStateName = 'normal' | 'planning' | 'approval' | 'executing';
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 export type TaskStatus = TodoItem['status'];
-export type PlanRefinementMode = 'supplement' | 'redefine';
-export type ApprovalEffect = 'start_execution' | 'open_refinement' | 'open_editor' | 'dismiss_approval';
+export type ApprovalEffect = 'start_execution' | 'view_plan' | 'open_editor' | 'dismiss_approval' | 'quit_plan';
+
+export type PlanEvent =
+	| { type: 'TOGGLE' }
+	| { type: 'PROPOSE'; plan: PlanProposal }
+	| { type: 'BLOCKED_CMD' }
+	| { type: 'APPROVAL_CHOICE'; effect: ApprovalEffect }
+	| { type: 'PLAN_EDITED'; plan: PlanProposal }
+	| { type: 'ALL_COMPLETE' }
+	| { type: 'TASK_BLOCKED' }
+	| { type: 'CONTINUE'; todo: TodoItem }
+	| { type: 'NO_PROGRESS_RETRY'; todo: TodoItem }
+	| { type: 'CONTINUATION_LIMIT' };
+
+export interface TransitionResult {
+	mode: PlanModeStateName;
+	actions: Array<TransitionAction>;
+}
+
+export type TransitionAction =
+	| { type: 'apply_phase'; phase: PhaseName }
+	| { type: 'notify'; message: string; level: 'info' | 'warning' }
+	| { type: 'reset_state'; mode: PlanModeStateName; clearTodos: boolean }
+	| { type: 'persist' }
+	| { type: 'update_status' }
+	| { type: 'send_handoff'; todo: TodoItem; reason: 'start' | 'continue' }
+	| { type: 'send_no_progress_continuation'; todo: TodoItem }
+	| { type: 'finish_execution'; completed: boolean }
+	| { type: 'show_approval_ui'; plan?: PlanProposal };
 
 export interface PhaseProfile {
 	provider?: string;
@@ -13,6 +40,8 @@ export interface PhaseProfile {
 	thinking?: ThinkingLevel;
 	tools?: string[];
 	context?: string;
+	instructions?: string[];
+	planCommandAllow?: CommandAllowlist;
 }
 
 export interface PhaseProfilesConfig {

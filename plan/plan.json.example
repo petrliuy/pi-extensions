@@ -5,7 +5,15 @@
             "model": "claude-4-opus",
             "thinking": "high",
             "tools": ["read", "bash", "edit", "write", "grep", "find", "ls", "questionnaire", "propose_plan"],
-            "context": "Use strong reasoning. Inspect first, ask high-impact clarifying questions when needed, and include explicit assumptions/defaults in the proposal. Do not edit files or run commands that change files, dependencies, git state, processes, or system state."
+            "context": "Use strong reasoning. Inspect first, ask for material user decisions when needed, and use assumptions only for low-risk defaults.",
+            "instructions": [
+                "Plan Mode is read-only by default. Put checks that may write caches, generated files, or external state into proposal verification instead of running them.",
+                "When a recurring Plan Mode mistake appears, add a short correction here instead of expanding command heuristics."
+            ],
+            "planCommandAllow": {
+                "exact": ["npm --prefix ../npm list"],
+                "prefixes": ["npm --prefix ../npm view"]
+            }
         },
         "execute": {
             "provider": "anthropic",
