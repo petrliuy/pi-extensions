@@ -8,7 +8,7 @@ Planning mode for safe code analysis, with a read-only bash allowlist, phase-bas
 normal ──/plan──→ planning ──propose_plan──→ approval ──Execute──→ executing ──all done──→ normal
                      ↑                          │  │                                      │
                      │        ┌──dismiss/Escape──┘  └──Quit──→ normal                       │
-                     │        ├──view──→ approval                                          │
+                     │        ├──refine/context──→ planning                                │
                      │        └──edit/save──→ executing; cancel stays in approval          │
                      └──toggle──────────────────────────blocked/limit──→ normal
 ```
@@ -24,11 +24,12 @@ States: `normal | planning | approval | executing`
 - **Read-only bash allowlist**: Auto-allows known read-only commands, asks for confirmation on non-whitelisted commands, and supports manual exact/prefix extensions
 - **Write-tool hard block**: Blocks edit, write, and apply_patch tool calls while Plan Mode is active
 - **Structured plan approval**: Uses the `propose_plan` tool to submit visible JSON-shaped plans and trigger the harness approval UI
+- **Proposal refinement**: Accepts additional context and asks the agent for one complete revised proposal without adding another runtime state
 - **Structured task progress**: Uses `plan_task_update` during execution as the canonical progress protocol
-- **Blocked-command handoff**: Captures blocked write commands as structured todos so execution can be approved explicitly
 - **Auto-continuation**: Continues approved execution while structured task progress is reported, with two no-progress retry turns and a safety limit
 - **Progress tracking**: Widget shows completion status during execution
-- **Session persistence**: State survives session resume
+- **Session persistence**: Current-schema state survives session resume and branch navigation
+- **Runtime restoration**: Restores the model, thinking level, and active tools that were active before Plan Mode
 - **Phase profiles**: Per-phase override of provider, model, thinking level, tools, and context
 
 ## Commands
@@ -64,9 +65,9 @@ If `plan.json` does not exist or a phase key is missing, the following defaults 
 |----------|------------|-------------------------------------------------------------|----------------------------------------------------|
 | `plan`   | `high`     | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `questionnaire`, `propose_plan` | Prompts strong reasoning, focus on analysis, no edits |
 | `execute`| `medium`   | `read`, `bash`, `edit`, `write`, `plan_task_update`          | Implementation-focused reasoning, minimal diffs    |
-| `normal` | `medium`   | `read`, `bash`, `edit`, `write`                             | (none)                                             |
+| `normal` | Restored   | Restored from the pre-plan runtime snapshot                 | (none)                                             |
 
-User-provided fields in `plan.json` are shallow-merged over these defaults. Only the fields you specify need to be included.
+User-provided fields in `plan.json` are shallow-merged over these defaults. Only the fields you specify need to be included. The normal profile has no built-in overrides; explicit normal fields are applied after restoring the pre-plan runtime snapshot.
 
 ### Example `~/.pi/agent/plan.json`
 
@@ -101,12 +102,12 @@ User-provided fields in `plan.json` are shallow-merged over these defaults. Only
 1. Enable plan mode with `/plan` or `--plan` flag
 2. Ask the agent to analyze code and create a plan
 3. For implementation, fix, or refactor requests, the agent applies a clarification gate: ask for material user decisions that repo context cannot answer, then call `propose_plan` with `title`, `summary`, ordered `steps`, optional `assumptions`, optional `verification`, optional `risks`, and optional `files`. The `summary` should capture key code findings, constraints, and implementation judgment needed during execution.
-4. Review the visible proposal, then choose `Execute plan`, `View full plan`, `Edit plan`, or `Quit plan`. `View full plan` opens the complete text and returns to approval when closed. Execution starts automatically after approval; saving an edited plan also starts execution with the edited steps.
+4. Review the complete proposal displayed directly in the TUI, then choose `Execute plan`, `Refine plan`, `Edit plan`, or `Quit plan`. `Refine plan` accepts additional context and requests a complete revised proposal. Execution starts automatically after approval; saving an edited plan also starts execution with the edited steps.
 5. During execution, the agent updates task state with `plan_task_update` (`pending`, `in_progress`, `completed`, or `blocked`).
 6. If more steps remain, Plan Mode automatically sends hidden continuation follow-ups. If a turn forgets to report task progress, Plan Mode retries twice with a stronger hidden reminder before marking execution blocked.
 7. The status bar shows completion count, and the progress widget shows only the current or next step.
 
-The approval prompt appears when the agent calls `propose_plan`; after approval, execution context includes compact approved plan metadata plus remaining steps. `View full plan` opens the same proposal text in a larger viewer and ignores any edits made there; only `Edit plan` mutates the pending plan. Blocked commands captured during planning use a minimal step-list handoff. Confirming execution or saving an edited plan sends a hidden follow-up handoff turn so approval made from the UI starts reliably without adding protocol noise to the chat. Plain yes/no chat replies are not treated as approval. Pressing Esc/Ctrl+C in the approval/edit UI closes that UI while keeping the pending plan available. Running `/plan` during execution clears the active execution state and exits Plan Mode.
+The complete proposal is displayed directly in the TUI when the agent calls `propose_plan`; after approval, execution context includes compact approved plan metadata plus remaining steps. `Refine plan` preserves the current proposal, sends the additional context through a hidden follow-up, and requires one complete revised `propose_plan` response. New context takes precedence where it conflicts with the current proposal. `Edit plan` directly replaces the pending plan and starts execution after successful validation. Invalid edits reopen the approval flow instead of executing. Confirming execution or saving an edited plan sends a hidden follow-up handoff turn so approval made from the UI starts reliably without adding protocol noise to the chat. Plain yes/no chat replies are not treated as approval. Cancelling the refinement or edit dialog returns to approval; dismissing the approval selector returns to planning. Running `/plan` during execution clears the active execution state and exits Plan Mode.
 
 ## How It Works
 
@@ -121,11 +122,10 @@ Transition table:
 | `normal` | `TOGGLE` | `planning` | reset, apply phase, notify |
 | `planning` | `TOGGLE` | `normal` | reset, apply phase, notify |
 | `planning` | `PROPOSE` | `approval` | persist, update status, show approval UI |
-| `planning` | `BLOCKED_CMD` | `approval` | persist, update status, show approval UI |
 | `approval` | `EXECUTE` | `executing` | apply phase, persist, update status |
-| `approval` | `VIEW` | `approval` | caller opens viewer; close returns to approval |
+| `approval` | `REFINE_SUBMITTED` | `planning` | persist, update status, send hidden refinement follow-up |
 | `approval` | `EDIT` | `approval`/`executing` | caller handles editor; cancel stays in approval, saving starts execution |
-| `approval` | `PLAN_EDITED` | `approval` | persist, show approval UI |
+| `approval` | `PROPOSE` | `approval` | replace plan, persist, show approval UI |
 | `approval` | `DISMISS` | `planning` | persist, update status |
 | `approval` | `QUIT` | `normal` | reset, apply phase, notify |
 | `executing` | `ALL_COMPLETE` | `normal` | finish execution (success) |
@@ -139,7 +139,8 @@ Transition table:
 The extension defines three phases, each with an independent profile:
 
 - **plan** — planning and exploration with read-only bash checks and high reasoning effort; switches model if configured
-- **execute** — full tool access with implementation-focused reasoning; switches model if configured
+- **execute** — restores the pre-plan tool set plus `plan_task_update`, unless explicitly configured; switches model if configured
+- **normal** — restores the runtime snapshot captured before Plan Mode, then applies explicit normal profile overrides
 
 When a phase is entered (`togglePlanMode`, executing plan, session resume), the extension:
 1. Sets the active tool list via `pi.setActiveTools`
@@ -162,13 +163,14 @@ Plan phase keeps the configured tool list and always adds `propose_plan` so stru
 - If it does not ask, `assumptions` should explain low-risk defaults and why no material clarification was needed
 - Agent calls `propose_plan` without making changes
 - Approved structured proposals are retained through execution and injected as compact execution context
+- Refinement carries the current proposal and additional user context forward and requires a complete revised proposal
 - Blocked write commands explicitly instruct the agent to stop retrying write-capable shell commands and produce a plan instead
 - The approval UI provides the user-controlled handoff into execution mode
-- Cancelling the approval/edit UI keeps the pending plan instead of clearing it
+- Cancelling the approval/refinement/edit UI keeps the pending plan instead of clearing it
 - `/plan` during execution clears the active execution state and exits Plan Mode
 
 ### Execution Mode
-- Full tool access restored
+- Pre-plan tool access restored, with `plan_task_update` added
 - Agent executes steps in order
 - `plan_task_update` tracks task state by stable task id
 - Automatic continuation sends the next execution follow-up while steps remain and progress is being marked
@@ -180,13 +182,14 @@ Plan phase keeps the configured tool list and always adds `propose_plan` so stru
 
 ### Session Restore
 
-State is persisted with `schemaVersion`, a single `mode` value (`normal`, `planning`, `approval`, or `executing`), todo items, pending plan data, blocked command data, continuation count, and no-progress continuation count. On `session_start`:
+State is persisted with `schemaVersion`, a single `mode` value (`normal`, `planning`, `approval`, or `executing`), todo items, pending plan data, the pre-plan runtime snapshot, continuation count, and no-progress continuation count. On `session_start` and `session_tree`:
 
-1. The last `plan-mode` entry is loaded
-2. Legacy entries with `enabled`, `executing`, or `phase` are migrated into the single-mode state
-3. Legacy `format_repair` mode is migrated to `planning`
+1. The last `plan-mode` entry on the current branch is loaded
+2. Entries from older schemas are ignored and Plan Mode starts in `normal`
+3. `--plan` overrides restored state and starts a fresh planning session
 4. If resuming an active execution, the extension trusts persisted task state
-5. The active phase profile is derived from `mode` and reapplied (tools, thinking, model)
+5. Interactive approval state reopens the approval UI; non-interactive approval state returns to planning
+6. The active phase profile is derived from `mode` and reapplied
 
 ### Bash Guard
 

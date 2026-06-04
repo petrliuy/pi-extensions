@@ -276,6 +276,5 @@ export interface TodoItem {
 	completed: boolean;
 	status: "pending" | "in_progress" | "completed" | "blocked";
 	message?: string;
-	source?: "plan" | "blocked_command";
-	command?: string;
+	source?: "plan";
 }

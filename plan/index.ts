@@ -10,10 +10,10 @@
  * Event handlers emit events, transition() returns the new mode + actions, callers execute them.
  */
 
-import type { AgentMessage } from '@mariozechner/pi-agent-core';
-import type { AssistantMessage, TextContent } from '@mariozechner/pi-ai';
-import type { ExtensionAPI, ExtensionContext } from '@mariozechner/pi-coding-agent';
-import { Key, Text } from '@mariozechner/pi-tui';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import type { TextContent } from '@earendil-works/pi-ai';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { Key, Text } from '@earendil-works/pi-tui';
 import type {
 	PlanModeStateName,
 	PlanProposal,
@@ -38,11 +38,10 @@ import {
 	transitionApproval,
 	transition,
 } from './constants.js';
-import { readConfig, getProfile, getPlanModeTools, applyPhaseProfile } from './config.js';
-import { createPlanState, normalizeStoredTodoItems, normalizeStoredPlan, resolveLegacyMode } from './state.js';
+import { readConfig, getProfile, getPlanModeTools, applyPhaseProfile, captureRuntimeSnapshot } from './config.js';
+import { createPlanState, restorePlanState } from './state.js';
 import { writeToolGuard, shellPlanGuard } from './guards.js';
 import {
-	todoFromBlockedCommand,
 	normalizePlanText,
 	normalizePlanProposal,
 	todosFromPlanProposal,
@@ -54,12 +53,13 @@ import {
 } from './format.js';
 
 /** Search/text-matching commands where exit code 1 means "no matches", not an error. */
-const SEARCH_EXIT_ONE_RE = /\b(rg|grep|ag|ack|git grep)\b/;
+const SEARCH_EXIT_ONE_RE = /^\s*(?:rg|grep|ag|ack|git\s+grep)\b[^;&|]*$/;
 
 export default function planModeExtension(pi: ExtensionAPI): void {
-	const config = readConfig();
+	const { config, diagnostics: configDiagnostics } = readConfig();
 	let state = createPlanState() as PlanRuntimeState;
 	let working = false;
+	let configDiagnosticsShown = false;
 
 	pi.registerFlag('plan', {
 		description: 'Start in plan mode (read-only planning)',
@@ -70,10 +70,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	// ── Status & widget ────────────────────────────────────────────
 
 	function updateStatus(ctx: ExtensionContext): void {
-		const phaseProfile = getProfile(config, phaseForMode(state.mode));
-		const modelLabel =
-			phaseProfile.provider && phaseProfile.model ? ` ${phaseProfile.provider}/${phaseProfile.model}` : '';
-		const thinkingLabel = phaseProfile.thinking ? ` ${phaseProfile.thinking}` : '';
+		const model = ctx.model as unknown as { provider?: string; id?: string };
+		const modelLabel = model?.provider && model?.id ? ` ${model.provider}/${model.id}` : '';
+		const thinkingLabel = ` ${pi.getThinkingLevel()}`;
 		const workIndicator = working ? '⏳ ' : '';
 
 		if (state.mode === 'executing' && state.todos.length > 0) {
@@ -119,7 +118,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	async function enterMode(ctx: ExtensionContext, mode: PlanModeStateName): Promise<void> {
 		state.mode = mode;
-		await applyPhaseProfile(pi, ctx, config, phaseForMode(mode));
+		await applyPhaseProfile(pi, ctx, config, phaseForMode(mode), state.runtimeSnapshot);
 		updateStatus(ctx);
 	}
 
@@ -128,6 +127,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		state = {
 			...createPlanState(mode),
 			todos,
+			runtimeSnapshot: state.runtimeSnapshot,
 		} as PlanRuntimeState;
 	}
 
@@ -135,12 +135,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		pi.appendEntry('plan-mode', {
 			schemaVersion: state.schemaVersion,
 			mode: state.mode,
-			enabled: isPlanModeActive(state.mode),
 			todos: state.todos,
-			executing: state.mode === 'executing',
-			phase: phaseForMode(state.mode),
-			pendingBlockedCommand: state.pendingBlockedCommand,
 			pendingPlan: state.pendingPlan,
+			runtimeSnapshot: state.runtimeSnapshot,
 			continuationCount: state.continuationCount,
 			noProgressContinuationCount: state.noProgressContinuationCount,
 		});
@@ -150,6 +147,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		return state.todos.filter((todo) => todo.status !== 'completed');
 	}
 
+	function getCurrentPlanForRefinement(): PlanProposal | undefined {
+		if (state.pendingPlan) return state.pendingPlan;
+		if (state.todos.length === 0) return undefined;
+		return normalizePlanProposal({
+			title: 'Current plan',
+			summary: 'Current available plan steps.',
+			steps: state.todos.map((todo) => todo.text),
+			assumptions: [],
+		});
+	}
+
 	// ── Action executor ────────────────────────────────────────────
 	// Executes actions returned by the centralized transition() function.
 
@@ -157,7 +165,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		for (const action of actions) {
 			switch (action.type) {
 				case 'apply_phase':
-					await enterMode(ctx, state.mode);
+					await enterMode(ctx, action.phase === 'execute' ? 'executing' : action.phase === 'plan' ? 'planning' : 'normal');
 					break;
 				case 'notify':
 					ctx.ui.notify(action.message, action.level);
@@ -210,6 +218,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			);
 		}
 
+		working = false;
+		if (ctx.hasUI) ctx.ui.setWorkingVisible(true);
 		resetPlanState('normal');
 		await enterMode(ctx, 'normal');
 		persistState();
@@ -217,6 +227,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	async function togglePlanMode(ctx: ExtensionContext): Promise<void> {
 		if (state.mode === 'executing') {
+			working = false;
+			if (ctx.hasUI) ctx.ui.setWorkingVisible(true);
 			resetPlanState('normal');
 			await enterMode(ctx, 'normal');
 			ctx.ui.notify('Previous plan execution state cleared. Plan mode exited.', 'info');
@@ -225,6 +237,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 
 		const nextMode: PlanModeStateName = isPlanModeActive(state.mode) ? 'normal' : 'planning';
+		if (nextMode === 'planning') {
+			state.runtimeSnapshot = captureRuntimeSnapshot(pi, ctx);
+		}
 		resetPlanState(nextMode);
 
 		if (nextMode === 'planning') {
@@ -248,10 +263,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			'\n  - Failure to call plan_task_update will cause the plan to stall and retry.';
 		const modeText = 'Execute autonomously while reporting structured task progress.';
 		let execMessage: string;
-
-		if (firstTodo?.source === 'blocked_command' && firstTodo.command) {
-			execMessage = `Execute the captured Plan Mode command, then verify the result:\n\n\`\`\`bash\n${firstTodo.command}\n\`\`\`\n\n${updateReminder}`;
-		} else if (reason === 'continue') {
+		if (reason === 'continue') {
 			execMessage = `Continue executing the approved plan.\n\nMode: ${modeText}\n\nNext task: ${firstTodo ? formatTodoLine(firstTodo) : 'the first remaining task'}\n\n${updateReminder}`;
 		} else {
 			execMessage = `Execute the approved plan.\n\nMode: ${modeText}\n\nStart with: ${firstTodo ? formatTodoLine(firstTodo) : 'the first task'}\n\n${updateReminder}`;
@@ -274,12 +286,24 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		);
 	}
 
+	function sendRefinementMessage(refinement: string, plan?: PlanProposal): void {
+		const currentPlanText = plan
+			? `\n\nCurrent proposal:\n${formatEditablePlan(plan)}`
+			: '\n\nCurrent proposal: not available from structured state. Use the latest conversation context as the baseline.';
+		pi.sendMessage(
+			{
+				customType: 'plan-refinement',
+				content: `Refine the current Plan Mode proposal using the new user context below.${currentPlanText}\n\nNew user context:\n${refinement.trim()}\n\nPreserve current proposal content that does not conflict with the new context. Where they conflict, follow the new context. Return one complete revised proposal by calling propose_plan. Do not execute the plan, modify files, or return only a partial diff.`,
+				display: false,
+			},
+			{ triggerTurn: true, deliverAs: 'followUp' },
+		);
+	}
+
 	async function startPlanExecution(ctx: ExtensionContext): Promise<void> {
 		state.continuationCount = 0;
 		state.noProgressContinuationCount = 0;
 		state.currentAgentProgressCount = 0;
-		state.pendingBlockedCommand = undefined;
-
 		working = true;
 		updateStatus(ctx);
 
@@ -292,7 +316,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	/**
 	 * Show the approval UI. Called when entering the approval state.
-	 * Handles Execute/View/Edit/Dismiss/Quit choices through the centralized state machine.
+	 * Handles Execute/Refine/Edit/Dismiss/Quit choices through the centralized state machine.
 	 */
 	function formatApprovalPlanContent(plan?: PlanProposal): string {
 		if (plan) return formatPlanProposal(plan);
@@ -300,86 +324,99 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		return `**Plan Steps (${state.todos.length}):**\n\n${todoListText}`;
 	}
 
-	async function promptForPlanExecution(ctx: ExtensionContext, plan?: PlanProposal, displayProposal = true): Promise<void> {
+	async function promptForPlanExecution(ctx: ExtensionContext, plan?: PlanProposal): Promise<void> {
 		state.mode = 'approval';
+		state.pendingPlan = plan ?? state.pendingPlan;
+		persistState();
+		if (!ctx.hasUI) {
+			state.mode = 'planning';
+			persistState();
+			updateStatus(ctx);
+			return;
+		}
 		const proposalContent = formatApprovalPlanContent(plan);
-		if (displayProposal) {
-			if (plan) {
-				pi.sendMessage(
-					{
-						customType: 'plan-proposal',
-						content: proposalContent,
-						display: true,
-						details: plan,
-					},
-					{ triggerTurn: false },
-				);
-			} else {
-				pi.sendMessage(
-					{
-						customType: 'plan-todo-list',
-						content: proposalContent,
-						display: true,
-					},
-					{ triggerTurn: false },
-				);
-			}
+		if (plan) {
+			pi.sendMessage(
+				{
+					customType: 'plan-proposal',
+					content: proposalContent,
+					display: true,
+					details: plan,
+				},
+				{ triggerTurn: false },
+			);
+		} else {
+			pi.sendMessage(
+				{
+					customType: 'plan-todo-list',
+					content: proposalContent,
+					display: true,
+				},
+				{ triggerTurn: false },
+			);
 		}
 
 		ctx.ui.setWorkingVisible(false);
 		working = false;
 		updateStatus(ctx);
-		const choice = await ctx.ui.select('Plan proposal - what next?', [...APPROVAL_CHOICES]);
+		while (state.mode === 'approval') {
+			const choice = await ctx.ui.select('Plan proposal - what next?', [...APPROVAL_CHOICES]);
+			const approvalTransition = transitionApproval(choice);
 
-		const approvalTransition = transitionApproval(choice);
-
-		if (approvalTransition.effect === 'start_execution') {
-			await startPlanExecution(ctx);
-		} else if (approvalTransition.effect === 'view_plan') {
-			ctx.ui.setWorkingVisible(false);
-			working = false;
-			updateStatus(ctx);
-			await ctx.ui.editor('View full plan (close to return):', proposalContent);
-			await promptForPlanExecution(ctx, plan, false);
-		} else if (approvalTransition.effect === 'open_editor') {
-			const basePlan =
-				state.pendingPlan ??
-				normalizePlanProposal({
-					title: 'Plan',
-					summary: 'Edited plan.',
-					steps: state.todos.map((todo) => todo.text),
-					assumptions: [],
-				});
-			const original = formatEditablePlan(basePlan);
-			ctx.ui.setWorkingVisible(false);
-			working = false;
-			updateStatus(ctx);
-			const edited = await ctx.ui.editor('Edit plan:', original);
-			if (edited?.trim() && edited !== original) {
-				const editedPlan = parseEditablePlan(edited, basePlan);
-				state.pendingPlan = editedPlan;
-				state.todos = todosFromPlanProposal(editedPlan);
-				persistState();
+			if (approvalTransition.effect === 'start_execution') {
 				await startPlanExecution(ctx);
 				return;
 			}
-			// Editor cancelled — stay in approval
+			if (approvalTransition.effect === 'open_refinement') {
+				const refinement = await ctx.ui.editor('Refine plan with additional context:', '');
+				if (!refinement?.trim()) continue;
+				const currentPlan = getCurrentPlanForRefinement();
+				const result = transition(state.mode, { type: 'REFINE_SUBMITTED' });
+				state.mode = result.mode;
+				await executeActions(ctx, result.actions);
+				ctx.ui.setWorkingVisible(true);
+				sendRefinementMessage(refinement, currentPlan);
+				return;
+			}
+			if (approvalTransition.effect === 'open_editor') {
+				const basePlan =
+					state.pendingPlan ??
+					normalizePlanProposal({
+						title: 'Plan',
+						summary: 'Edited plan.',
+						steps: state.todos.map((todo) => todo.text),
+						assumptions: [],
+					});
+				let editorText = formatEditablePlan(basePlan);
+				while (state.mode === 'approval') {
+					const edited = await ctx.ui.editor('Edit plan:', editorText);
+					if (!edited?.trim() || edited === editorText) break;
+					try {
+						const editedPlan = parseEditablePlan(edited);
+						state.pendingPlan = editedPlan;
+						state.todos = todosFromPlanProposal(editedPlan);
+						persistState();
+						await startPlanExecution(ctx);
+						return;
+					} catch (error) {
+						ctx.ui.notify(error instanceof Error ? error.message : String(error), 'warning');
+						editorText = edited;
+					}
+				}
+				continue;
+			}
 			working = false;
-			updateStatus(ctx);
-			persistState();
-		} else if (approvalTransition.effect === 'quit_plan') {
-			working = false;
-			updateStatus(ctx);
-			const result = transition(state.mode, { type: 'APPROVAL_CHOICE', effect: 'quit_plan' });
-			state.mode = result.mode;
-			await executeActions(ctx, result.actions);
-		} else {
-			// dismiss (Escape/Ctrl+C)
-			working = false;
-			updateStatus(ctx);
+			if (approvalTransition.effect === 'quit_plan') {
+				ctx.ui.setWorkingVisible(true);
+				const result = transition(state.mode, { type: 'APPROVAL_CHOICE', effect: 'quit_plan' });
+				state.mode = result.mode;
+				await executeActions(ctx, result.actions);
+				return;
+			}
 			const result = transition(state.mode, { type: 'APPROVAL_CHOICE', effect: 'dismiss_approval' });
 			state.mode = result.mode;
 			await executeActions(ctx, result.actions);
+			return;
 		}
 	}
 
@@ -434,7 +471,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const plan = normalizePlanProposal(params);
 			state.pendingPlan = plan;
 			state.todos = todosFromPlanProposal(plan);
-			state.pendingBlockedCommand = undefined;
 
 			const result = transition(state.mode, { type: 'PROPOSE', plan });
 			state.mode = result.mode;
@@ -444,7 +480,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				content: [
 					{
 						type: 'text',
-						text: ctx.hasUI ? 'Structured plan submitted to Plan Mode.' : 'Structured plan submitted.',
+							text: ctx.hasUI ? 'Structured plan submitted to Plan Mode.' : formatPlanProposal(plan),
 					},
 				],
 				details: { plan, todos: state.todos },
@@ -530,7 +566,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	// Suppress error display for search commands that exit with code 1 (no matches).
 	pi.on('tool_result', async (event) => {
-		if (event.toolName !== 'bash' || !event.isError) return;
+		if (!isPlanModeActive(state.mode) || event.toolName !== 'bash' || !event.isError) return;
 		const command = event.input?.command as string | undefined;
 		if (!command || !SEARCH_EXIT_ONE_RE.test(command)) return;
 
@@ -564,25 +600,12 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		const profile = getProfile(config, 'plan');
 		const shellDecision = shellPlanGuard(command, profile.planCommandAllow);
 		if (shellDecision) {
-			// Direct reject for known destructive commands — no confirm dialog, no approval path
-			if (!shellDecision.blockedCommand) {
-				return {
-					block: shellDecision.block,
-					reason: shellDecision.reason,
-				};
-			}
-
 			if (ctx.hasUI) {
 				const approved = await ctx.ui.confirm(
 					'Run non-whitelisted Plan Mode command?',
 					`Plan Mode is read-only by default. This bash command is not in the built-in allowlist or your manual allowlist:\n\n${command}\n\nApprove only if this is an inspection command. Commands that may change local or external state belong in the proposal and should run only after execution approval.`,
 				);
 				if (approved) return;
-			}
-
-			if (ctx.hasUI && !state.pendingBlockedCommand && shellDecision.blockedCommand) {
-				state.pendingBlockedCommand = shellDecision.blockedCommand;
-				persistState();
 			}
 			return {
 				block: shellDecision.block,
@@ -632,7 +655,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		const profile = getProfile(config, phase);
 		const phaseContext = profile.context ? `\n\n[PHASE PROFILE: ${phase}]\n${profile.context}` : '';
 		const supplementalInstructions = profile.instructions?.length
-			? `\n\n[SUPPLEMENTAL PLAN INSTRUCTIONS]\n${profile.instructions.map((item) => `- ${item}`).join('\n')}`
+			? `\n\n[SUPPLEMENTAL ${phase.toUpperCase()} INSTRUCTIONS]\n${profile.instructions.map((item) => `- ${item}`).join('\n')}`
 			: '';
 		const activePlanTools = phase === 'plan' ? getPlanModeTools(profile) : (profile.tools ?? PLAN_MODE_TOOLS);
 
@@ -661,7 +684,7 @@ Workflow:
 3. Apply the Clarification Gate before proposing:
    - Ask the user when any material decision cannot be resolved from repository evidence.
    - Material decisions include scope, goal, success criteria, product intent, risk tolerance, execution strategy, architecture boundary, data/user impact, or rollout choice.
-   - Use the questionnaire tool for clarification. Provide 2-4 concrete options plus a "Custom / Other" option.
+   - Use the questionnaire tool when available. Provide 2-4 concrete options plus a "Custom / Other" option.
    - Do not replace unclear user intent with assumptions.
 4. Proceed without asking only when remaining uncertainty is low-risk, local, reversible, and supported by repository evidence. In propose_plan.assumptions, explain why clarification was not needed.
 
@@ -691,7 +714,7 @@ Do NOT attempt to make changes - just describe what you would do.${phaseContext}
 			return {
 				message: {
 					customType: 'plan-execution-context',
-					content: `[EXECUTING PLAN - Full tool access enabled]
+					content: `[EXECUTING APPROVED PLAN]
 ${approvedPlanContext}
 
 Remaining steps:
@@ -703,7 +726,18 @@ MANDATORY: You MUST call plan_task_update to report progress for every task:
 - Mark a task in_progress when you start working on it.
 - Mark a task completed only after it is fully implemented and verified.
 - If a task cannot proceed, mark it blocked with a short reason.
-- Failure to call plan_task_update will cause the plan to stall and retry.${phaseContext}`,
+- Complete the approved verification before marking the final task completed.
+- Failure to call plan_task_update will cause the plan to stall and retry.${phaseContext}${supplementalInstructions}`,
+					display: false,
+				},
+			};
+		}
+
+		if (phaseContext || supplementalInstructions) {
+			return {
+				message: {
+					customType: 'phase-profile-context',
+					content: `[PHASE PROFILE: ${phase}]${phaseContext}${supplementalInstructions}`,
 					display: false,
 				},
 			};
@@ -784,54 +818,18 @@ MANDATORY: You MUST call plan_task_update to report progress for every task:
 			return;
 		}
 
-		// ── Blocked command handoff (planning phase) ──
-		if (isPlanModeActive(state.mode) && state.mode !== 'approval' && state.pendingBlockedCommand && ctx.hasUI) {
-			state.todos = [todoFromBlockedCommand(state.pendingBlockedCommand)];
-			const result = transition(state.mode, { type: 'BLOCKED_CMD' });
-			state.mode = result.mode;
-			state.pendingBlockedCommand = undefined;
-			await executeActions(ctx, result.actions);
-		}
 	});
 
-	pi.on('session_start', async (_event, ctx) => {
-		if (pi.getFlag('plan') === true) {
-			state = createPlanState('planning') as PlanRuntimeState;
-		}
+	async function restoreCurrentBranch(ctx: ExtensionContext, forcePlan = false): Promise<void> {
+		const entries = ctx.sessionManager.getBranch();
+		const planModeEntry = [...entries].reverse().find((entry) => {
+			const candidate = entry as { type: string; customType?: string };
+			return candidate.type === 'custom' && candidate.customType === 'plan-mode';
+		}) as { data?: PlanModeEntryData } | undefined;
 
-		const entries = ctx.sessionManager.getEntries();
-
-		let planModeEntryIndex = -1;
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i] as { type: string; customType?: string };
-			if (entry.type === 'custom' && entry.customType === 'plan-mode') {
-				planModeEntryIndex = i;
-				break;
-			}
-		}
-		const planModeEntry = (planModeEntryIndex >= 0 ? entries[planModeEntryIndex] : undefined) as
-			| { data?: PlanModeEntryData }
-			| undefined;
-
-		if (planModeEntry?.data) {
-			const data = planModeEntry.data;
-			const legacyMode = resolveLegacyMode(data);
-			state = {
-				schemaVersion: 2 as const,
-				mode: legacyMode,
-				todos: normalizeStoredTodoItems(data.todos ?? state.todos),
-				pendingBlockedCommand: data.pendingBlockedCommand,
-				pendingPlan: normalizeStoredPlan(data.pendingPlan),
-				continuationCount: data.continuationCount ?? 0,
-				noProgressContinuationCount: data.noProgressContinuationCount ?? 0,
-				currentAgentProgressCount: 0,
-			};
-		}
-
-		// Migrate legacy format_repair mode to planning on restore
-		if (state.mode === ('format_repair' as string)) {
-			state.mode = 'planning';
-		}
+		state = forcePlan
+			? ({ ...createPlanState('planning'), runtimeSnapshot: captureRuntimeSnapshot(pi, ctx) } as PlanRuntimeState)
+			: (restorePlanState(planModeEntry?.data) as PlanRuntimeState);
 
 		if (
 			state.mode === 'executing' &&
@@ -842,5 +840,39 @@ MANDATORY: You MUST call plan_task_update to report progress for every task:
 		}
 
 		await enterMode(ctx, state.mode);
+		if (state.mode === 'approval') {
+			if (ctx.hasUI) {
+				await promptForPlanExecution(ctx, state.pendingPlan);
+			} else {
+				state.mode = 'planning';
+				persistState();
+			}
+		}
+	}
+
+	pi.on('session_start', async (_event, ctx) => {
+		if (!configDiagnosticsShown && configDiagnostics.length > 0 && ctx.hasUI) {
+			configDiagnosticsShown = true;
+			for (const diagnostic of configDiagnostics) ctx.ui.notify(diagnostic.message, 'warning');
+		}
+		const knownTools = new Set(pi.getAllTools().map((tool) => tool.name));
+		for (const phase of ['plan', 'execute', 'normal'] as const) {
+			const tools = config.profiles?.[phase]?.tools;
+			if (!tools) continue;
+			const validTools = tools.filter((tool) => knownTools.has(tool));
+			for (const tool of tools.filter((tool) => !knownTools.has(tool))) {
+				if (ctx.hasUI) ctx.ui.notify(`Plan config: unknown tool in ${phase} profile: ${tool}`, 'warning');
+			}
+			if (validTools.length > 0 || tools.length === 0) {
+				config.profiles![phase]!.tools = validTools;
+			} else {
+				delete config.profiles![phase]!.tools;
+			}
+		}
+		await restoreCurrentBranch(ctx, pi.getFlag('plan') === true);
+	});
+
+	pi.on('session_tree', async (_event, ctx) => {
+		await restoreCurrentBranch(ctx);
 	});
 }

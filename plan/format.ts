@@ -1,6 +1,6 @@
-import type { AgentMessage } from '@mariozechner/pi-agent-core';
-import type { AssistantMessage, TextContent } from '@mariozechner/pi-ai';
-import type { PendingBlockedCommand, PlanProposal, PlanProposalInput } from './types.js';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import type { AssistantMessage, TextContent } from '@earendil-works/pi-ai';
+import type { PlanProposal, PlanProposalInput } from './types.js';
 import type { TodoItem } from './utils.js';
 
 export function isAssistantMessage(m: AgentMessage): m is AssistantMessage {
@@ -14,29 +14,15 @@ export function getTextContent(message: AssistantMessage): string {
 		.join('\n');
 }
 
-export function summarizeCommand(command: string): string {
-	const summary = command.replace(/\s+/g, ' ').trim();
-	if (summary.length <= 50) return summary;
-	return `${summary.slice(0, 47)}...`;
-}
-
-export function todoFromBlockedCommand(blocked: PendingBlockedCommand): TodoItem {
-	return {
-		id: 'blocked-command-1',
-		step: 1,
-		text: summarizeCommand(blocked.command),
-		completed: false,
-		status: 'pending',
-		source: 'blocked_command',
-		command: blocked.command,
-	};
-}
-
 export function normalizePlanText(text: unknown, field: string): string {
 	if (typeof text !== 'string' || text.trim().length === 0) {
 		throw new Error(`${field} must be a non-empty string.`);
 	}
-	return text.trim();
+	const normalized = text.trim();
+	if (/[\r\n]/.test(normalized)) {
+		throw new Error(`${field} must be a single-line string.`);
+	}
+	return normalized;
 }
 
 export function normalizePlanList(values: unknown, field: string, required: boolean): string[] {
@@ -119,26 +105,25 @@ Summary: ${plan.summary}${assumptions}${verification}${risks}${files}`;
 }
 
 export function formatEditablePlan(plan: PlanProposal): string {
-	const lines = [
+	return [
 		`Title: ${plan.title}`,
 		`Summary: ${plan.summary}`,
 		'',
 		'Steps:',
 		...plan.steps.map((step, index) => `${index + 1}. ${step}`),
-	];
-	if (plan.assumptions.length > 0) {
-		lines.push('', 'Assumptions:', ...plan.assumptions.map((item, index) => `${index + 1}. ${item}`));
-	}
-	if (plan.verification.length > 0) {
-		lines.push('', 'Verification:', ...plan.verification.map((item, index) => `${index + 1}. ${item}`));
-	}
-	if (plan.risks.length > 0) {
-		lines.push('', 'Risks:', ...plan.risks.map((item, index) => `${index + 1}. ${item}`));
-	}
-	if (plan.files.length > 0) {
-		lines.push('', 'Files:', ...plan.files.map((item) => `- ${item}`));
-	}
-	return lines.join('\n');
+		'',
+		'Assumptions:',
+		...plan.assumptions.map((item, index) => `${index + 1}. ${item}`),
+		'',
+		'Verification:',
+		...plan.verification.map((item, index) => `${index + 1}. ${item}`),
+		'',
+		'Risks:',
+		...plan.risks.map((item, index) => `${index + 1}. ${item}`),
+		'',
+		'Files:',
+		...plan.files.map((item) => `- ${item}`),
+	].join('\n');
 }
 
 export function parseEditableList(lines: string[]): string[] {
@@ -147,12 +132,12 @@ export function parseEditableList(lines: string[]): string[] {
 		.filter(Boolean);
 }
 
-export function parseEditablePlan(text: string, fallback: PlanProposal): PlanProposal {
+export function parseEditablePlan(text: string): PlanProposal {
 	const lines = text.split('\n');
 	const sections = new Map<string, string[]>();
 	let current = '';
-	let title = fallback.title;
-	let summary = fallback.summary;
+	let title: string | undefined;
+	let summary: string | undefined;
 
 	for (const rawLine of lines) {
 		const line = rawLine.trim();
@@ -174,13 +159,16 @@ export function parseEditablePlan(text: string, fallback: PlanProposal): PlanPro
 		}
 	}
 
+	if (!title) throw new Error('Title is required.');
+	if (!summary) throw new Error('Summary is required.');
+
 	return normalizePlanProposal({
 		title,
 		summary,
-		steps: parseEditableList(sections.get('steps') ?? fallback.steps),
-		assumptions: parseEditableList(sections.get('assumptions') ?? fallback.assumptions),
-		verification: parseEditableList(sections.get('verification') ?? fallback.verification),
-		risks: parseEditableList(sections.get('risks') ?? fallback.risks),
-		files: parseEditableList(sections.get('files') ?? fallback.files),
+		steps: parseEditableList(sections.get('steps') ?? []),
+		assumptions: parseEditableList(sections.get('assumptions') ?? []),
+		verification: parseEditableList(sections.get('verification') ?? []),
+		risks: parseEditableList(sections.get('risks') ?? []),
+		files: parseEditableList(sections.get('files') ?? []),
 	});
 }

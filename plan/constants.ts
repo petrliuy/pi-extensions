@@ -3,12 +3,12 @@ import type { TodoItem } from './utils.js';
 
 export const PLAN_PROPOSAL_TOOL = 'propose_plan';
 export const PLAN_TASK_UPDATE_TOOL = 'plan_task_update';
-export const PLAN_STATE_SCHEMA_VERSION = 2;
+export const PLAN_STATE_SCHEMA_VERSION = 3;
 export const NORMAL_MODE_TOOLS = ['read', 'bash', 'edit', 'write'];
 export const PLAN_MODE_TOOLS = [...NORMAL_MODE_TOOLS, 'grep', 'find', 'ls', 'questionnaire', PLAN_PROPOSAL_TOOL];
 export const EXECUTE_MODE_TOOLS = [...NORMAL_MODE_TOOLS, PLAN_TASK_UPDATE_TOOL];
 export const PLAN_MODE_WRITE_TOOLS = new Set(['edit', 'write', 'apply_patch']);
-export const APPROVAL_CHOICES = ['Execute plan', 'View full plan', 'Edit plan', 'Quit plan'] as const;
+export const APPROVAL_CHOICES = ['Execute plan', 'Refine plan', 'Edit plan', 'Quit plan'] as const;
 export const MAX_AUTO_CONTINUATIONS = 8;
 export const MAX_NO_PROGRESS_CONTINUATIONS = 2;
 
@@ -90,8 +90,8 @@ export function transitionApproval(choice: string | undefined): ApprovalTransiti
 	if (choice === 'Execute plan') {
 		return { mode: 'executing', effect: 'start_execution' };
 	}
-	if (choice === 'View full plan') {
-		return { mode: 'approval', effect: 'view_plan' };
+	if (choice === 'Refine plan') {
+		return { mode: 'approval', effect: 'open_refinement' };
 	}
 	if (choice === 'Edit plan') {
 		return { mode: 'approval', effect: 'open_editor' };
@@ -145,16 +145,6 @@ export function transition(mode: PlanModeStateName, event: PlanEvent): Transitio
 					],
 				};
 			}
-			if (event.type === 'BLOCKED_CMD') {
-				return {
-					mode: 'approval',
-					actions: [
-						{ type: 'persist' },
-						{ type: 'update_status' },
-						{ type: 'show_approval_ui' },
-					],
-				};
-			}
 			break;
 		}
 
@@ -190,13 +180,23 @@ export function transition(mode: PlanModeStateName, event: PlanEvent): Transitio
 						],
 					};
 				}
-				// open_editor handled by caller (needs async UI), then emits PLAN_EDITED
+				// open_refinement and open_editor are handled by the caller because they need async UI.
 			}
-			if (event.type === 'PLAN_EDITED') {
+			if (event.type === 'REFINE_SUBMITTED') {
+				return {
+					mode: 'planning',
+					actions: [
+						{ type: 'persist' },
+						{ type: 'update_status' },
+					],
+				};
+			}
+			if (event.type === 'PROPOSE') {
 				return {
 					mode: 'approval',
 					actions: [
 						{ type: 'persist' },
+						{ type: 'update_status' },
 						{ type: 'show_approval_ui', plan: event.plan },
 					],
 				};

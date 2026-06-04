@@ -2,7 +2,6 @@ import type { ToolGuardDecision } from './types.js';
 import type { CommandAllowlist } from './utils.js';
 import { isReadOnlyCommand, isDestructiveCommand } from './utils.js';
 import { PLAN_MODE_WRITE_TOOLS } from './constants.js';
-import { summarizeCommand } from './format.js';
 
 export function isPlanModeWriteTool(toolName: string): boolean {
 	const normalized = toolName.toLowerCase();
@@ -38,11 +37,6 @@ export function shellPlanGuard(command: string, allowlist: CommandAllowlist = {}
 
 	return {
 		block: true,
-		blockedCommand: {
-			toolName: 'bash',
-			command,
-			text: summarizeCommand(command),
-		},
 		reason: planInstructionGuard(
 			`Plan mode: bash command is not in the read-only allowlist.\nCommand: ${command}`,
 		),

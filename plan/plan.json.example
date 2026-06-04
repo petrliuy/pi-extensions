@@ -21,9 +21,6 @@
             "thinking": "low",
             "tools": ["read", "bash", "edit", "write", "plan_task_update"],
             "context": "Implement the approved plan step by step. Prefer minimal diffs. Report task progress with plan_task_update."
-        },
-        "normal": {
-            "thinking": "medium"
         }
     }
 }

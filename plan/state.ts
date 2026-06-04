@@ -1,19 +1,15 @@
 import type { TodoItem } from './utils.js';
-import type { PlanModeStateName, PlanProposal, PendingBlockedCommand } from './types.js';
+import type { PlanModeStateName, PlanProposal, RuntimeSnapshot } from './types.js';
 import { PLAN_STATE_SCHEMA_VERSION } from './constants.js';
 
 export interface PlanModeEntryData {
-	schemaVersion?: number;
-	mode?: PlanModeStateName;
-	enabled: boolean;
-	todos?: TodoItem[];
-	executing?: boolean;
-	phase?: 'plan' | 'execute' | 'normal';
-	stage?: 'inspect' | 'plan';
-	pendingBlockedCommand?: PendingBlockedCommand;
+	schemaVersion: number;
+	mode: PlanModeStateName;
+	todos: TodoItem[];
 	pendingPlan?: PlanProposal;
-	continuationCount?: number;
-	noProgressContinuationCount?: number;
+	runtimeSnapshot?: RuntimeSnapshot;
+	continuationCount: number;
+	noProgressContinuationCount: number;
 }
 
 export function createPlanState(mode: PlanModeStateName = 'normal') {
@@ -32,7 +28,7 @@ export function normalizeStoredTodoItems(items: TodoItem[]): TodoItem[] {
 		const status = item.status ?? (item.completed ? 'completed' : 'pending');
 		return {
 			...item,
-			id: item.id ?? `${item.source === 'blocked_command' ? 'blocked-command' : 'task'}-${index + 1}`,
+			id: item.id ?? `task-${index + 1}`,
 			step: item.step ?? index + 1,
 			completed: status === 'completed',
 			status,
@@ -53,13 +49,16 @@ export function normalizeStoredPlan(plan: PlanProposal | undefined): PlanProposa
 	};
 }
 
-export function resolveLegacyMode(data: PlanModeEntryData): PlanModeStateName {
-	return data.executing
-		? 'executing'
-		: data.mode ??
-			(data.enabled
-				? data.todos?.length
-					? 'approval'
-					: 'planning'
-				: 'normal');
+export function restorePlanState(data: PlanModeEntryData | undefined) {
+	if (!data || data.schemaVersion !== PLAN_STATE_SCHEMA_VERSION) return createPlanState();
+	return {
+		schemaVersion: PLAN_STATE_SCHEMA_VERSION,
+		mode: data.mode,
+		todos: normalizeStoredTodoItems(data.todos),
+		pendingPlan: normalizeStoredPlan(data.pendingPlan),
+		runtimeSnapshot: data.runtimeSnapshot,
+		continuationCount: data.continuationCount,
+		noProgressContinuationCount: data.noProgressContinuationCount,
+		currentAgentProgressCount: 0,
+	};
 }
