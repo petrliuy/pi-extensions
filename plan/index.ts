@@ -472,9 +472,20 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const task = updateTaskStatus(params);
 			persistState();
 			updateStatus(ctx);
+			const allCompleted = state.todos.every((todo) => todo.status === 'completed');
+			const executionBlocked = state.todos.some((todo) => todo.status === 'blocked');
+			const terminal = allCompleted || executionBlocked;
 			return {
-				content: [],
+				content: [
+					{
+						type: 'text',
+						text: terminal
+							? `Task ${task.id} marked ${task.status}. Ending the execution turn.`
+							: `Task ${task.id} marked ${task.status}.`,
+					},
+				],
 				details: { task },
+				terminate: terminal,
 			};
 		},
 		renderShell: 'self',
@@ -553,6 +564,14 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		const profile = getProfile(config, 'plan');
 		const shellDecision = shellPlanGuard(command, profile.planCommandAllow);
 		if (shellDecision) {
+			// Direct reject for known destructive commands — no confirm dialog, no approval path
+			if (!shellDecision.blockedCommand) {
+				return {
+					block: shellDecision.block,
+					reason: shellDecision.reason,
+				};
+			}
+
 			if (ctx.hasUI) {
 				const approved = await ctx.ui.confirm(
 					'Run non-whitelisted Plan Mode command?',

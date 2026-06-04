@@ -174,6 +174,7 @@ Plan phase keeps the configured tool list and always adds `propose_plan` so stru
 - Automatic continuation sends the next execution follow-up while steps remain and progress is being marked
 - No-progress turns get two automatic retries before Plan Mode marks execution blocked and clears the active state
 - Tasks marked `blocked` stop execution immediately and clear the active state
+- Completing the final task terminates the current agent turn immediately; `agent_end` then sends completion and returns to `normal`
 - Widget shows progress
 - When all steps are marked done, a completion message is sent and mode returns to `normal`
 

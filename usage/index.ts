@@ -297,12 +297,9 @@ async function queryDeepSeek(provider: ProviderConfig): Promise<UsageReport> {
 	const baseUrl = stripVersionSuffix(provider.baseUrl ?? "https://api.deepseek.com");
 	const data = await fetchJson(`${baseUrl}/user/balance`, provider.apiKey);
 	const rawBalances = isObject(data) && Array.isArray(data.balance_infos) ? data.balance_infos : [];
-	const balances = rawBalances.filter(isObject).map((balance) => {
-		const currency = typeof balance.currency === "string" ? balance.currency : "unknown";
+	const balances = rawBalances.filter(isObject).filter((balance) => (typeof balance.currency === "string" ? balance.currency : "unknown") === "CNY").map((balance) => {
 		const total = typeof balance.total_balance === "string" ? balance.total_balance : "?";
-		const granted = typeof balance.granted_balance === "string" ? balance.granted_balance : "?";
-		const toppedUp = typeof balance.topped_up_balance === "string" ? balance.topped_up_balance : "?";
-		return `${currency}: total ${total}, granted ${granted}, topped-up ${toppedUp}`;
+		return `total: ${total}`;
 	});
 
 	return {

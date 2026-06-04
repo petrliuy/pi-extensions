@@ -1,6 +1,6 @@
 import type { ToolGuardDecision } from './types.js';
 import type { CommandAllowlist } from './utils.js';
-import { isReadOnlyCommand } from './utils.js';
+import { isReadOnlyCommand, isDestructiveCommand } from './utils.js';
 import { PLAN_MODE_WRITE_TOOLS } from './constants.js';
 import { summarizeCommand } from './format.js';
 
@@ -26,6 +26,16 @@ export function writeToolGuard(toolName: string): ToolGuardDecision | undefined 
 
 export function shellPlanGuard(command: string, allowlist: CommandAllowlist = {}): ToolGuardDecision | undefined {
 	if (isReadOnlyCommand(command, allowlist)) return undefined;
+
+	if (isDestructiveCommand(command)) {
+		return {
+			block: true,
+			reason: planInstructionGuard(
+				`Plan mode: this command has side effects and cannot run in Plan Mode.\nCommand: ${command}`,
+			),
+		};
+	}
+
 	return {
 		block: true,
 		blockedCommand: {
