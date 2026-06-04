@@ -34,6 +34,7 @@ const BUILT_IN_ALLOW_PREFIXES = [
 	"awk",
 	"jq",
 	"fd",
+	"xargs",
 	"wc",
 	"sort",
 	"uniq",
