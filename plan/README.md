@@ -215,7 +215,7 @@ The status indicator shows different information per phase:
 | `execute`   | `📋 3/5` (accent color) with progress count                   |
 | `normal`    | Hidden                                                        |
 
-If a profile overrides `provider`/`model`, the status shows `⏸ anthropic/claude-4-opus`.
+If a profile overrides `provider`/`model`, the status shows the successfully selected model, such as `⏸ plan anthropic/claude-4-opus high`.
 If a profile overrides `thinking`, the status shows `⏸ plan high`.
 
 A widget (`plan-todos`) renders only the current in-progress step, blocked step, or next pending step. Full task details remain available through `/todos`.

@@ -25,6 +25,13 @@ export function normalizePlanText(text: unknown, field: string): string {
 	return normalized;
 }
 
+export function normalizePlanSummary(summary: unknown): string {
+	if (typeof summary !== 'string' || summary.trim().length === 0) {
+		throw new Error('summary must be a non-empty string.');
+	}
+	return summary.trim().replace(/\s*[\r\n]+\s*/g, ' ');
+}
+
 export function normalizePlanList(values: unknown, field: string, required: boolean): string[] {
 	if (values === undefined && !required) return [];
 	if (!Array.isArray(values)) {
@@ -42,7 +49,7 @@ export function normalizePlanList(values: unknown, field: string, required: bool
 export function normalizePlanProposal(params: PlanProposalInput): PlanProposal {
 	return {
 		title: normalizePlanText(params.title, 'title'),
-		summary: normalizePlanText(params.summary, 'summary'),
+		summary: normalizePlanSummary(params.summary),
 		steps: normalizePlanList(params.steps, 'steps', true),
 		assumptions: normalizePlanList(params.assumptions, 'assumptions', false),
 		verification: normalizePlanList(params.verification, 'verification', false),

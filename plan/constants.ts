@@ -22,7 +22,7 @@ export const PLAN_PROPOSAL_PARAMETERS = {
 		summary: {
 			type: 'string',
 			description:
-				'Brief summary of what the plan will accomplish, including key code findings, constraints, and implementation judgment that execution should preserve.',
+				'Brief summary of what the plan will accomplish, including key code findings, constraints, and implementation judgment that execution should preserve. Newlines are normalized to spaces.',
 		},
 		steps: {
 			type: 'array',

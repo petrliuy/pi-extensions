@@ -60,6 +60,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let state = createPlanState() as PlanRuntimeState;
 	let working = false;
 	let configDiagnosticsShown = false;
+	let activeModel: Pick<RuntimeSnapshot, 'provider' | 'model'> | undefined;
 
 	pi.registerFlag('plan', {
 		description: 'Start in plan mode (read-only planning)',
@@ -71,7 +72,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	function updateStatus(ctx: ExtensionContext): void {
 		const model = ctx.model as unknown as { provider?: string; id?: string };
-		const modelLabel = model?.provider && model?.id ? ` ${model.provider}/${model.id}` : '';
+		const provider = activeModel?.provider ?? model?.provider;
+		const modelId = activeModel?.model ?? model?.id;
+		const modelLabel = provider && modelId ? ` ${provider}/${modelId}` : '';
 		const thinkingLabel = ` ${pi.getThinkingLevel()}`;
 		const workIndicator = working ? '⏳ ' : '';
 
@@ -118,7 +121,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	async function enterMode(ctx: ExtensionContext, mode: PlanModeStateName): Promise<void> {
 		state.mode = mode;
-		await applyPhaseProfile(pi, ctx, config, phaseForMode(mode), state.runtimeSnapshot);
+		activeModel =
+			(await applyPhaseProfile(pi, ctx, config, phaseForMode(mode), state.runtimeSnapshot)) ??
+			captureRuntimeSnapshot(pi, ctx);
 		updateStatus(ctx);
 	}
 
@@ -874,6 +879,15 @@ MANDATORY: You MUST call plan_task_update to report progress for every task:
 			}
 		}
 		await restoreCurrentBranch(ctx, pi.getFlag('plan') === true);
+	});
+
+	pi.on('model_select', (event, ctx) => {
+		const model = event.model as { provider?: unknown; id?: unknown; modelId?: unknown; name?: unknown };
+		const provider = typeof model.provider === 'string' ? model.provider : undefined;
+		const modelId =
+			typeof model.id === 'string' ? model.id : typeof model.modelId === 'string' ? model.modelId : model.name;
+		activeModel = provider && typeof modelId === 'string' ? { provider, model: modelId } : undefined;
+		updateStatus(ctx);
 	});
 
 	pi.on('session_tree', async (_event, ctx) => {

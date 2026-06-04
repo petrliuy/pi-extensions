@@ -143,8 +143,9 @@ export async function applyPhaseProfile(
 	config: PhaseProfilesConfig,
 	phase: PhaseName,
 	runtimeSnapshot?: RuntimeSnapshot,
-): Promise<void> {
+): Promise<Pick<RuntimeSnapshot, 'provider' | 'model'> | undefined> {
 	const profile = getProfile(config, phase);
+	let appliedModel: Pick<RuntimeSnapshot, 'provider' | 'model'> | undefined;
 	const planTools = phase === 'plan' ? getPlanModeTools(profile) : undefined;
 	const executeTools =
 		phase === 'execute'
@@ -159,15 +160,17 @@ export async function applyPhaseProfile(
 		if (runtimeSnapshot) {
 			pi.setActiveTools(runtimeSnapshot.tools);
 			pi.setThinkingLevel(runtimeSnapshot.thinking);
-			await switchModel(pi, ctx, runtimeSnapshot.provider, runtimeSnapshot.model, 'normal runtime');
+			appliedModel = await switchModel(pi, ctx, runtimeSnapshot.provider, runtimeSnapshot.model, 'normal runtime');
 		}
 		const normalOverrides = config.profiles?.normal;
 		if (normalOverrides?.tools) pi.setActiveTools(normalOverrides.tools);
 		if (normalOverrides?.thinking) pi.setThinkingLevel(normalOverrides.thinking);
 		if (normalOverrides?.provider && normalOverrides.model) {
-			await switchModel(pi, ctx, normalOverrides.provider, normalOverrides.model, 'phase normal');
+			appliedModel =
+				(await switchModel(pi, ctx, normalOverrides.provider, normalOverrides.model, 'phase normal')) ??
+				appliedModel;
 		}
-		return;
+		return appliedModel;
 	}
 
 	if (planTools) {
@@ -181,8 +184,9 @@ export async function applyPhaseProfile(
 	if (profile.thinking) pi.setThinkingLevel(profile.thinking);
 
 	if (profile.provider && profile.model) {
-		await switchModel(pi, ctx, profile.provider, profile.model, `phase ${phase}`);
+		appliedModel = await switchModel(pi, ctx, profile.provider, profile.model, `phase ${phase}`);
 	}
+	return appliedModel;
 }
 
 async function switchModel(
@@ -191,15 +195,16 @@ async function switchModel(
 	provider: string | undefined,
 	modelId: string | undefined,
 	label: string,
-): Promise<void> {
-	if (!provider || !modelId) return;
+): Promise<Pick<RuntimeSnapshot, 'provider' | 'model'> | undefined> {
+	if (!provider || !modelId) return undefined;
 	const model = getModelRegistry(ctx)?.find?.(provider, modelId);
 	if (!model) {
 		if (ctx.hasUI) ctx.ui.notify(`${label}: model not found: ${provider}/${modelId}`, 'warning');
-		return;
+		return undefined;
 	}
 	const ok = await pi.setModel(model as never);
 	if (ok === false && ctx.hasUI) {
 		ctx.ui.notify(`${label}: failed to switch model: ${provider}/${modelId}`, 'warning');
 	}
+	return ok === false ? undefined : { provider, model: modelId };
 }

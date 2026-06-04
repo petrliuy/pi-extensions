@@ -31,13 +31,20 @@ describe("editable plan format", () => {
 		);
 	});
 
-	it("rejects multiline structured values", () => {
-		expect(() =>
+	it("normalizes multiline summaries and rejects multiline list items", () => {
+		expect(
 			normalizePlanProposal({
 				title: "Plan",
 				summary: "First line\nSecond line",
 				steps: ["Change code"],
+			}).summary,
+		).toBe("First line Second line");
+		expect(() =>
+			normalizePlanProposal({
+				title: "Plan",
+				summary: "Summary",
+				steps: ["First line\nSecond line"],
 			}),
-		).toThrow("summary must be a single-line string");
+		).toThrow("steps[0] must be a single-line string");
 	});
 });
