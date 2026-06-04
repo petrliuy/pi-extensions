@@ -10,7 +10,7 @@ export function isPlanModeWriteTool(toolName: string): boolean {
 }
 
 function planInstructionGuard(prefix: string): string {
-	return `${prefix} Use read-only inspection in Plan Mode. Move mutating or uncertain commands into propose_plan, or add recurring safe commands to profiles.plan.planCommandAllow.`;
+	return `${prefix} Continue with read-only inspection and call propose_plan for the requested change when the approach is clear. Do not ask the user to exit or switch Plan Mode. Add only recurring read-only commands to profiles.plan.planCommandAllow.`;
 }
 
 export function writeToolGuard(toolName: string): ToolGuardDecision | undefined {

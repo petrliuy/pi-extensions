@@ -1,11 +1,11 @@
-import type { PhaseName, PlanModeStateName, ApprovalTransition, PlanEvent, TransitionResult, PlanProposal } from './types.js';
+import type { PhaseName, PlanModeStateName, ApprovalTransition, PlanEvent, TransitionResult } from './types.js';
 import type { TodoItem } from './utils.js';
 
 export const PLAN_PROPOSAL_TOOL = 'propose_plan';
 export const PLAN_TASK_UPDATE_TOOL = 'plan_task_update';
 export const PLAN_STATE_SCHEMA_VERSION = 3;
 export const NORMAL_MODE_TOOLS = ['read', 'bash', 'edit', 'write'];
-export const PLAN_MODE_TOOLS = [...NORMAL_MODE_TOOLS, 'grep', 'find', 'ls', 'questionnaire', PLAN_PROPOSAL_TOOL];
+export const PLAN_MODE_TOOLS = ['read', 'bash', 'grep', 'find', 'ls', 'questionnaire', PLAN_PROPOSAL_TOOL];
 export const EXECUTE_MODE_TOOLS = [...NORMAL_MODE_TOOLS, PLAN_TASK_UPDATE_TOOL];
 export const PLAN_MODE_WRITE_TOOLS = new Set(['edit', 'write', 'apply_patch']);
 export const APPROVAL_CHOICES = ['Execute plan', 'Refine plan', 'Edit plan', 'Quit plan'] as const;
@@ -141,7 +141,6 @@ export function transition(mode: PlanModeStateName, event: PlanEvent): Transitio
 					actions: [
 						{ type: 'persist' },
 						{ type: 'update_status' },
-						{ type: 'show_approval_ui', plan: event.plan },
 					],
 				};
 			}
@@ -197,7 +196,6 @@ export function transition(mode: PlanModeStateName, event: PlanEvent): Transitio
 					actions: [
 						{ type: 'persist' },
 						{ type: 'update_status' },
-						{ type: 'show_approval_ui', plan: event.plan },
 					],
 				};
 			}

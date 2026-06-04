@@ -188,9 +188,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				case 'finish_execution':
 					await finishExecution(ctx, action.completed);
 					break;
-				case 'show_approval_ui':
-					await promptForPlanExecution(ctx, action.plan);
-					break;
 			}
 		}
 	}
@@ -324,6 +321,25 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		return `**Plan Steps (${state.todos.length}):**\n\n${todoListText}`;
 	}
 
+	function showPlanProposal(plan?: PlanProposal): void {
+		const proposalContent = formatApprovalPlanContent(plan);
+		pi.sendMessage(
+			plan
+				? {
+						customType: 'plan-proposal',
+						content: proposalContent,
+						display: true,
+						details: plan,
+					}
+				: {
+						customType: 'plan-todo-list',
+						content: proposalContent,
+						display: true,
+					},
+			{ triggerTurn: false },
+		);
+	}
+
 	async function promptForPlanExecution(ctx: ExtensionContext, plan?: PlanProposal): Promise<void> {
 		state.mode = 'approval';
 		state.pendingPlan = plan ?? state.pendingPlan;
@@ -333,27 +349,6 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			persistState();
 			updateStatus(ctx);
 			return;
-		}
-		const proposalContent = formatApprovalPlanContent(plan);
-		if (plan) {
-			pi.sendMessage(
-				{
-					customType: 'plan-proposal',
-					content: proposalContent,
-					display: true,
-					details: plan,
-				},
-				{ triggerTurn: false },
-			);
-		} else {
-			pi.sendMessage(
-				{
-					customType: 'plan-todo-list',
-					content: proposalContent,
-					display: true,
-				},
-				{ triggerTurn: false },
-			);
 		}
 
 		ctx.ui.setWorkingVisible(false);
@@ -461,6 +456,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			'Use assumptions only for low-risk implementation defaults; do not use assumptions to bypass unclear user intent.',
 			'If no question was asked, explain in assumptions why no material clarification was needed.',
 			'Do not ask the user to reply yes or no in chat for execution approval; propose_plan will trigger the harness approval UI.',
+			'Do not ask the user to exit or switch Plan Mode. Finish planning and call propose_plan instead.',
 		],
 		parameters: PLAN_PROPOSAL_PARAMETERS,
 		async execute(_toolCallId, params: PlanProposalInput, _signal, _onUpdate, ctx) {
@@ -480,7 +476,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				content: [
 					{
 						type: 'text',
-							text: ctx.hasUI ? 'Structured plan submitted to Plan Mode.' : formatPlanProposal(plan),
+						text: formatPlanProposal(plan),
 					},
 				],
 				details: { plan, todos: state.todos },
@@ -673,6 +669,7 @@ Restrictions:
 - Built-in read-only bash commands and manually allowlisted commands may run directly.
 - Non-allowlisted bash confirmation is only for commands you believe are read-only inspection commands.
 - If the user asks you to implement, edit, execute, continue, or apply changes while plan mode is active, treat that as a request to plan the execution. Do not attempt to execute it.
+- Never tell the user to exit, disable, or switch Plan Mode so you can make changes. The approval UI performs the execution handoff.
 - Commands that may change local or external state belong in the proposal and should run only after execution approval.
 - If a useful check may write generated files, caches, build artifacts, or external state, include it in propose_plan.verification instead of running it in Plan Mode.
 - If a recurring read-only command is blocked, mention that it can be added to profiles.plan.planCommandAllow in ~/.pi/agent/plan.json.
@@ -698,6 +695,7 @@ Once the approach is clear for a fix, change, implementation, or refactor reques
 - files: optional likely touched files or modules
 
 Do not ask the user "should I apply this?" in plain text. The propose_plan tool triggers the harness approval UI.
+Do not stop after explaining that edits are unavailable. Continue planning and call propose_plan.
 
 For pure analysis tasks, respond directly with findings, risks, trade-offs, and recommendations, without calling propose_plan.
 
@@ -745,6 +743,11 @@ MANDATORY: You MUST call plan_task_update to report progress for every task:
 	});
 
 	pi.on('agent_end', async (_event, ctx) => {
+		if (state.mode === 'approval') {
+			await promptForPlanExecution(ctx, state.pendingPlan);
+			return;
+		}
+
 		// ── Execution continuation logic ──
 		if (state.mode === 'executing' && state.todos.length > 0) {
 			if (state.todos.every((t) => t.status === 'completed')) {
@@ -842,6 +845,7 @@ MANDATORY: You MUST call plan_task_update to report progress for every task:
 		await enterMode(ctx, state.mode);
 		if (state.mode === 'approval') {
 			if (ctx.hasUI) {
+				showPlanProposal(state.pendingPlan);
 				await promptForPlanExecution(ctx, state.pendingPlan);
 			} else {
 				state.mode = 'planning';

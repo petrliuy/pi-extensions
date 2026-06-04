@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { PLAN_MODE_TOOLS, EXECUTE_MODE_TOOLS, PLAN_PROPOSAL_TOOL, PLAN_TASK_UPDATE_TOOL } from './constants.js';
+import { isPlanModeWriteTool } from './guards.js';
 
 const CONFIG_PATH = join(homedir(), '.pi', 'agent', 'plan.json');
 
@@ -18,7 +19,7 @@ export const DEFAULT_PROFILES: Record<PhaseName, PhaseProfile> = {
 		thinking: 'high',
 		tools: PLAN_MODE_TOOLS,
 		context:
-			'Use stronger reasoning. Focus on analysis, risks, trade-offs, and an executable plan. Do not edit files.',
+			'Use stronger reasoning. Focus on analysis, risks, trade-offs, and an executable proposal. Call propose_plan instead of attempting edits or asking the user to exit Plan Mode.',
 		instructions: [],
 		planCommandAllow: {
 			exact: [],
@@ -109,7 +110,7 @@ export function getProfile(config: PhaseProfilesConfig, phase: PhaseName): Phase
 
 export function getPlanModeTools(profile: PhaseProfile): string[] {
 	const requestedTools = profile.tools ?? PLAN_MODE_TOOLS;
-	const tools = [...requestedTools];
+	const tools = requestedTools.filter((tool) => !isPlanModeWriteTool(tool));
 	if (!tools.includes(PLAN_PROPOSAL_TOOL)) {
 		tools.push(PLAN_PROPOSAL_TOOL);
 	}

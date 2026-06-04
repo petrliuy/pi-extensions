@@ -12,6 +12,16 @@ const plan = {
 };
 
 describe("approval transitions", () => {
+	it("defers approval UI until agent_end after a new proposal", () => {
+		const result = transition("planning", { type: "PROPOSE", plan });
+
+		expect(result.mode).toBe("approval");
+		expect(result.actions.map((action) => action.type)).toEqual([
+			"persist",
+			"update_status",
+		]);
+	});
+
 	it("supports a replacement proposal while approval is open", () => {
 		const result = transition("approval", { type: "PROPOSE", plan });
 
@@ -19,7 +29,6 @@ describe("approval transitions", () => {
 		expect(result.actions.map((action) => action.type)).toEqual([
 			"persist",
 			"update_status",
-			"show_approval_ui",
 		]);
 	});
 

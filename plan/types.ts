@@ -30,8 +30,7 @@ export type TransitionAction =
 	| { type: 'update_status' }
 	| { type: 'send_handoff'; todo: TodoItem; reason: 'start' | 'continue' }
 	| { type: 'send_no_progress_continuation'; todo: TodoItem }
-	| { type: 'finish_execution'; completed: boolean }
-	| { type: 'show_approval_ui'; plan?: PlanProposal };
+	| { type: 'finish_execution'; completed: boolean };
 
 export interface PhaseProfile {
 	provider?: string;
