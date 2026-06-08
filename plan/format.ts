@@ -38,8 +38,14 @@ export function normalizePlanList(values: unknown, field: string, required: bool
 		throw new Error(`${field} must be an array of strings.`);
 	}
 	const normalized = values
-		.map((value, index) => normalizePlanText(value, `${field}[${index}]`))
-		.filter((value) => value.length > 0);
+		.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+		.map((value, index) => {
+			const trimmed = value.trim();
+			if (/[\r\n]/.test(trimmed)) {
+				throw new Error(`${field}[${index}] must be a single-line string.`);
+			}
+			return trimmed;
+		});
 	if (required && normalized.length === 0) {
 		throw new Error(`${field} must contain at least one item.`);
 	}

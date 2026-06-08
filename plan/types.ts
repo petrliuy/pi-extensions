@@ -85,6 +85,11 @@ export interface ApprovalTransition {
 export interface ToolGuardDecision {
 	block: boolean;
 	reason: string;
+	/**
+	 * 'destructive' commands hard-block without confirmation (always-rejected side effects).
+	 * 'unknown' commands may still be approved via the read-only inspection prompt.
+	 */
+	severity?: 'destructive' | 'unknown';
 }
 
 export interface PlanTaskUpdateInput {

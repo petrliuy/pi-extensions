@@ -23,6 +23,20 @@ const BUILT_IN_ALLOW_EXACT = new Set([
 
 const BUILT_IN_ALLOW_PREFIXES = [
 	"cd",
+	"echo",
+	"for",
+	"do",
+	"done",
+	"if",
+	"then",
+	"else",
+	"elif",
+	"fi",
+	"while",
+	"until",
+	"in",
+	"case",
+	"esac",
 	"rg",
 	"grep",
 	"find",
@@ -45,6 +59,8 @@ const BUILT_IN_ALLOW_PREFIXES = [
 	"git log",
 	"git diff",
 	"git show",
+	"git ls-tree",
+	"git branch -a",
 	"npm list",
 	"npm ls",
 	"npm view",
@@ -162,7 +178,7 @@ const DESTRUCTIVE_COMMAND_PREFIXES = [
 ];
 
 export function isDestructiveCommand(command: string): boolean {
-	const normalized = normalizeCommand(command);
+	const normalized = normalizeCommand(stripGitPathFlag(command));
 	return DESTRUCTIVE_COMMAND_PREFIXES.some((prefix) => {
 		return normalized === prefix || normalized.startsWith(`${prefix} `);
 	});
@@ -175,7 +191,19 @@ function normalizeCommand(command: string): string {
 }
 
 function stripHarmlessRedirection(command: string): string {
-	return command.replace(/\s+2>>?\s*\/dev\/null\b/g, "");
+	let result = command.replace(/\s+2>>?\s*\/dev\/null\b/g, "");
+	// Strip harmless display-only redirects that otherwise trigger UNSAFE_SHELL_PATTERN.
+	result = result.replace(/\s+2>&1\b/g, "");
+	result = result.replace(/\s+(?:1)?>&2\b/g, "");
+	return result;
+}
+
+/**
+ * Strip content inside single and double quotes to avoid
+ * false positives from UNSAFE_SHELL_PATTERN (e.g. `grep "<style"`).
+ */
+function stripQuotedContent(command: string): string {
+	return command.replace(/'[^']*'/g, "").replace(/"([^"\\]|\\.)*"/g, "");
 }
 
 function splitCommandSegments(command: string): string[] {
@@ -250,21 +278,28 @@ function splitCommandSegments(command: string): string[] {
 	return segments;
 }
 
+/** Strip `git -C <path>` prefix so git subcommands are recognized regardless of working directory. */
+function stripGitPathFlag(command: string): string {
+	return command.replace(/^git\s+-C\s+(?:"[^"]*"|'[^']*'|\S+)\s+/, "git ");
+}
+
 function hasAllowedPrefix(command: string, prefix: string): boolean {
 	return command === prefix || command.startsWith(`${prefix} `);
 }
 
 function isAllowedSegment(command: string, allowlist: CommandAllowlist): boolean {
-	if (BUILT_IN_ALLOW_EXACT.has(command) || allowlist.exact?.includes(command)) return true;
+	const matchTarget = stripGitPathFlag(command);
+	if (BUILT_IN_ALLOW_EXACT.has(matchTarget) || allowlist.exact?.includes(matchTarget)) return true;
 
 	return [...BUILT_IN_ALLOW_PREFIXES, ...(allowlist.prefixes ?? [])].some((prefix) =>
-		hasAllowedPrefix(command, normalizeCommand(prefix)),
+		hasAllowedPrefix(matchTarget, normalizeCommand(prefix)),
 	);
 }
 
 export function isReadOnlyCommand(command: string, allowlist: CommandAllowlist = {}): boolean {
 	const normalized = normalizeCommand(stripHarmlessRedirection(command));
-	if (!normalized || UNSAFE_SHELL_PATTERN.test(normalized)) return false;
+	if (!normalized) return false;
+	if (UNSAFE_SHELL_PATTERN.test(stripQuotedContent(normalized))) return false;
 
 	const segments = splitCommandSegments(normalized);
 	return segments.length > 0 && segments.every((segment) => isAllowedSegment(segment, allowlist));

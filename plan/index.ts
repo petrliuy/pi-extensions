@@ -601,13 +601,18 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		const profile = getProfile(config, 'plan');
 		const shellDecision = shellPlanGuard(command, profile.planCommandAllow);
 		if (shellDecision) {
-			if (ctx.hasUI) {
-				const approved = await ctx.ui.confirm(
-					'Run non-whitelisted Plan Mode command?',
-					`Plan Mode is read-only by default. This bash command is not in the built-in allowlist or your manual allowlist:\n\n${command}\n\nApprove only if this is an inspection command. Commands that may change local or external state belong in the proposal and should run only after execution approval.`,
-				);
-				if (approved) return;
+			// Destructive commands are hard-rejected — no confirmation prompt.
+			if (shellDecision.severity === 'destructive' || !ctx.hasUI) {
+				return {
+					block: shellDecision.block,
+					reason: shellDecision.reason,
+				};
 			}
+			const approved = await ctx.ui.confirm(
+				'Run non-whitelisted Plan Mode command?',
+				`Plan Mode is read-only by default. This bash command is not in the built-in allowlist or your manual allowlist:\n\n${command}\n\nApprove only if this is an inspection command. Commands that may change local or external state belong in the proposal and should run only after execution approval.`,
+			);
+			if (approved) return;
 			return {
 				block: shellDecision.block,
 				reason: shellDecision.reason,

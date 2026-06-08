@@ -29,6 +29,7 @@ export function shellPlanGuard(command: string, allowlist: CommandAllowlist = {}
 	if (isDestructiveCommand(command)) {
 		return {
 			block: true,
+			severity: 'destructive',
 			reason: planInstructionGuard(
 				`Plan mode: this command has side effects and cannot run in Plan Mode.\nCommand: ${command}`,
 			),
@@ -37,6 +38,7 @@ export function shellPlanGuard(command: string, allowlist: CommandAllowlist = {}
 
 	return {
 		block: true,
+		severity: 'unknown',
 		reason: planInstructionGuard(
 			`Plan mode: bash command is not in the read-only allowlist.\nCommand: ${command}`,
 		),
