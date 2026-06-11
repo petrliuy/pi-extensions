@@ -19,7 +19,7 @@ export const DEFAULT_PROFILES: Record<PhaseName, PhaseProfile> = {
 		thinking: 'high',
 		tools: PLAN_MODE_TOOLS,
 		context:
-			'Use stronger reasoning. Focus on analysis, risks, trade-offs, and an executable proposal. Call propose_plan instead of attempting edits or asking the user to exit Plan Mode.',
+			'Use stronger reasoning. Focus on analysis, risks, trade-offs, and an executable proposal. When the user asks to execute, proceed, continue, or apply changes in Plan Mode, call propose_plan instead of attempting edits, decomposing steps in prose, or asking the user to exit Plan Mode.',
 		instructions: [],
 		planCommandAllow: {
 			exact: [],
@@ -117,9 +117,18 @@ export function getPlanModeTools(profile: PhaseProfile): string[] {
 	return tools;
 }
 
+export function withoutPlanInternalTools(tools: string[]): string[] {
+	return tools.filter((tool) => tool !== PLAN_PROPOSAL_TOOL && tool !== PLAN_TASK_UPDATE_TOOL);
+}
+
 export function getExecuteModeTools(profile: PhaseProfile): string[] | undefined {
 	if (!profile.tools?.length) return undefined;
-	return profile.tools.includes(PLAN_TASK_UPDATE_TOOL) ? profile.tools : [...profile.tools, PLAN_TASK_UPDATE_TOOL];
+	const tools = profile.tools.filter((tool) => tool !== PLAN_PROPOSAL_TOOL);
+	return tools.includes(PLAN_TASK_UPDATE_TOOL) ? tools : [...tools, PLAN_TASK_UPDATE_TOOL];
+}
+
+export function getNormalModeTools(tools: string[]): string[] {
+	return withoutPlanInternalTools(tools);
 }
 
 export function captureRuntimeSnapshot(pi: ExtensionAPI, ctx: ExtensionContext): RuntimeSnapshot {
@@ -157,13 +166,14 @@ export async function applyPhaseProfile(
 			: undefined;
 
 	if (phase === 'normal') {
+		let normalTools = runtimeSnapshot ? getNormalModeTools(runtimeSnapshot.tools) : getNormalModeTools(pi.getActiveTools());
 		if (runtimeSnapshot) {
-			pi.setActiveTools(runtimeSnapshot.tools);
 			pi.setThinkingLevel(runtimeSnapshot.thinking);
 			appliedModel = await switchModel(pi, ctx, runtimeSnapshot.provider, runtimeSnapshot.model, 'normal runtime');
 		}
 		const normalOverrides = config.profiles?.normal;
-		if (normalOverrides?.tools) pi.setActiveTools(normalOverrides.tools);
+		if (normalOverrides?.tools) normalTools = getNormalModeTools(normalOverrides.tools);
+		pi.setActiveTools(normalTools);
 		if (normalOverrides?.thinking) pi.setThinkingLevel(normalOverrides.thinking);
 		if (normalOverrides?.provider && normalOverrides.model) {
 			appliedModel =

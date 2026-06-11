@@ -5,9 +5,10 @@
             "model": "claude-4-opus",
             "thinking": "high",
             "tools": ["read", "bash", "grep", "find", "ls", "questionnaire", "propose_plan"],
-            "context": "Use strong reasoning. Inspect first, ask for material user decisions when needed, and call propose_plan instead of attempting edits or asking the user to exit Plan Mode.",
+            "context": "Use strong reasoning. Inspect first, ask for material user decisions when needed, and call propose_plan when the user asks to execute, continue, proceed, apply changes, or otherwise move forward in Plan Mode.",
             "instructions": [
                 "Plan Mode is read-only by default. Put checks that may write caches, generated files, or external state into proposal verification instead of running them.",
+                "Do not answer execution requests with a prose-only step breakdown; submit the complete proposal with propose_plan so the approval UI can hand off execution.",
                 "When a recurring Plan Mode mistake appears, add a short correction here instead of expanding command heuristics."
             ],
             "planCommandAllow": {

@@ -41,6 +41,7 @@ import {
 import { readConfig, getProfile, getPlanModeTools, applyPhaseProfile, captureRuntimeSnapshot } from './config.js';
 import { createPlanState, restorePlanState } from './state.js';
 import { writeToolGuard, shellPlanGuard } from './guards.js';
+import { buildPlanModeContext } from './context.js';
 import {
 	normalizePlanText,
 	normalizePlanProposal,
@@ -669,47 +670,13 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			return {
 				message: {
 					customType: 'plan-mode-context',
-					content: `[PLAN MODE ACTIVE]
-You are in Plan Mode: a read-only planning mode for inspection, questions, and executable proposals.
-
-Restrictions:
-- Available tools: ${activePlanTools.join(', ')}
-- Default to read-only inspection. Do not intentionally change local or external state.
-- Write-capable tools are not allowed while Plan Mode is active.
-- Built-in read-only bash commands and manually allowlisted commands may run directly.
-- Non-allowlisted bash confirmation is only for commands you believe are read-only inspection commands.
-- If the user asks you to implement, edit, execute, continue, or apply changes while plan mode is active, treat that as a request to plan the execution. Do not attempt to execute it.
-- Never tell the user to exit, disable, or switch Plan Mode so you can make changes. The approval UI performs the execution handoff.
-- Commands that may change local or external state belong in the proposal and should run only after execution approval.
-- If a useful check may write generated files, caches, build artifacts, or external state, include it in propose_plan.verification instead of running it in Plan Mode.
-- If a recurring read-only command is blocked, mention that it can be added to profiles.plan.planCommandAllow in ~/.pi/agent/plan.json.
-- If the user wants to proceed after a plan exists, use propose_plan so the approval UI can start execution automatically. Do not ask for a yes/no chat reply and do not tell them to apply shell commands manually.
-
-Workflow:
-1. Inspect the relevant code and environment without side effects.
-2. Identify intent, success criteria, scope, constraints, current state, and key tradeoffs.
-3. Apply the Clarification Gate before proposing:
-   - Ask the user when any material decision cannot be resolved from repository evidence.
-   - Material decisions include scope, goal, success criteria, product intent, risk tolerance, execution strategy, architecture boundary, data/user impact, or rollout choice.
-   - Use the questionnaire tool when available. Provide 2-4 concrete options plus a "Custom / Other" option.
-   - Do not replace unclear user intent with assumptions.
-4. Proceed without asking only when remaining uncertainty is low-risk, local, reversible, and supported by repository evidence. In propose_plan.assumptions, explain why clarification was not needed.
-
-Once the approach is clear for a fix, change, implementation, or refactor request, call propose_plan with:
-- title: short title
-- summary: brief summary, including key code findings, constraints, and implementation judgment needed during execution
-- steps: ordered implementation steps
-- assumptions: low-risk defaults and the reason clarification was not needed, if no question was asked
-- verification: verification commands or scenarios
-- risks: optional risk notes
-- files: optional likely touched files or modules
-
-Do not ask the user "should I apply this?" in plain text. The propose_plan tool triggers the harness approval UI.
-Do not stop after explaining that edits are unavailable. Continue planning and call propose_plan.
-
-For pure analysis tasks, respond directly with findings, risks, trade-offs, and recommendations, without calling propose_plan.
-
-Do NOT attempt to make changes - just describe what you would do.${phaseContext}${supplementalInstructions}`,
+					content: buildPlanModeContext({
+						activePlanTools,
+						phase,
+						phaseContext,
+						supplementalInstructions,
+						pendingPlan: state.pendingPlan,
+					}),
 					display: false,
 				},
 			};
