@@ -16,7 +16,7 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - `buddy/` - Local terminal companion modeled on Claude Code `/buddy`.
 - `usage/` - Provider quota and balance queries for selected model providers.
 - `undo/` - Restore files changed by the last Pi edit/write tool turn.
-- `tooling/` - Always-on tool selection guidance that nudges agents toward `rg`, `fd`, `jq`, `yq`, `uvx`, `npx`, `httpie`, and Context7.
+- `tooling/` - Always-on tool selection and git commit hygiene guidance that nudges agents toward `rg`, `fd`, `jq`, `yq`, `uvx`, `npx`, `httpie`, and Context7.
 - `rtk.ts` - RTK transparent bash proxy that rewrites supported commands through `rtk rewrite` for compact output.
 
 ## Usage

@@ -39,6 +39,7 @@ Tool selection preferences for every turn:
 - Prefer yq for inspecting, filtering, and transforming YAML, TOML, XML, and properties-style structured config.
 - Prefer http/httpie for readable API calls and JSON responses. Use curl when lower-level flags or compatibility are needed.
 - Inspect existing repo tooling before adding commands. Use package scripts, local binaries, or documented project workflows when they exist.
+- For git commit requests, refresh the working tree immediately before staging with git status --short --branch. Do not rely on earlier status or diff output from the session. Unless the user names specific files or exclusions, stage all current changes with git add -A, verify the staged set with git diff --cached --name-status, commit, then report the post-commit git status --short --branch.
 - For library, framework, SDK, API, CLI, or cloud-service documentation questions, use Context7 with npx ctx7@latest library first, then npx ctx7@latest docs for the selected library id.
 - For one-off external tools, prefer ephemeral execution such as uvx, npx, bunx, go run, or cargo before proposing installation.
 - Avoid global installs, curl | sh, and persistent environment mutation unless explicitly approved by the user.
