@@ -5,6 +5,7 @@ import type {
 	PhaseProfile,
 	PhaseProfilesConfig,
 	RuntimeSnapshot,
+	TirithConfig,
 } from './types.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -98,6 +99,22 @@ function validateConfig(config: PhaseProfilesConfig): ConfigDiagnostic[] {
 			}
 		}
 	}
+
+	if (config.tirith !== undefined) {
+		const t = config.tirith as Partial<TirithConfig> | null;
+		const valid =
+			t && typeof t === 'object' &&
+			!Array.isArray(t) &&
+			(t.enabled === undefined || typeof t.enabled === 'boolean') &&
+			(t.binary === undefined || typeof t.binary === 'string') &&
+			(t.timeoutMs === undefined || (typeof t.timeoutMs === 'number' && t.timeoutMs > 0)) &&
+			(t.warnAction === undefined || t.warnAction === 'allow' || t.warnAction === 'deny');
+		if (!valid) {
+			diagnostics.push({ message: `${CONFIG_PATH}: tirith is invalid.` });
+			delete config.tirith;
+		}
+	}
+
 	return diagnostics;
 }
 

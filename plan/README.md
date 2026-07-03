@@ -206,6 +206,37 @@ Plan Mode uses a simple exact/prefix allowlist model instead of trying to detect
 
 Add recurring safe project-specific commands to `profiles.plan.planCommandAllow` in `~/.pi/agent/plan.json`. Use `exact` for full command matches and `prefixes` for command starts such as `npm --prefix ../npm list`. Use `profiles.plan.instructions` for behavior guidance, and `planCommandAllow` only for commands that should auto-run in Plan Mode. `/undo` remains limited to approved `edit`/`write` file changes and does not roll back shell mutations.
 
+## Tirith integration (optional)
+
+Plan Mode can enrich its bash guard with [tirith](https://github.com/sheeki03/tirith), a terminal/command security scanner (homograph URLs, `curl | bash`, base64 decode-execute, data exfiltration, obfuscated payloads, malicious packages/domains). Enable it via the top-level `tirith` key in `~/.pi/agent/plan.json`:
+
+```json
+{
+  "tirith": {
+    "enabled": true,
+    "binary": "tirith",
+    "timeoutMs": 10000,
+    "warnAction": "allow"
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `boolean` | `false` | Opt in to tirith enrichment. |
+| `binary` | `string` | `$TIRITH_BIN` or `tirith` | Override the tirith binary path. |
+| `timeoutMs` | `number` | `10000` | `execFileSync` timeout for `tirith check`. |
+| `warnAction` | `"allow"` \| `"deny"` | `$TIRITH_HOOK_WARN_ACTION` or `allow` | `allow` keeps the caller's severity and surfaces findings in the reason; `deny` escalates a tirith warning to a hard block. |
+
+Behavior contract — tirith is **enrichment-only and can only strengthen**:
+
+- Only commands Plan Mode already blocks are scanned (allowlisted read-only commands skip tirith, so there is no per-command overhead).
+- tirith block (exit 1), or warn (exit 2) with `warnAction: "deny"` → escalate to `destructive` (hard block, no confirmation prompt) and append findings to the reason.
+- tirith warn (exit 2) with `warnAction: "allow"` → keep Plan Mode's severity, append findings to the reason so they reach the agent and the approval prompt.
+- tirith clean (exit 0) or error (missing binary / timeout / unexpected exit) → Plan Mode's own decision stands unchanged. A missing or erroring tirith binary never opens a hole.
+
+Findings are folded into the blocked `reason`, which is shown to the agent, so the agent can cite them in `propose_plan` `risks`/`verification`. Install tirith separately (`brew install tirith`); this extension does not install or vendor it. `TIRITH_BIN`, `TIRITH_HOOK_WARN_ACTION` env vars are respected for parity with tirith's own Pi CLI extension.
+
 ## Status Bar
 
 The status indicator shows different information per phase:

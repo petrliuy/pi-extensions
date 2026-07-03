@@ -1,7 +1,9 @@
 import type { ToolGuardDecision } from './types.js';
 import type { CommandAllowlist } from './utils.js';
+import type { TirithConfig } from './types.js';
 import { isReadOnlyCommand, isDestructiveCommand } from './utils.js';
 import { PLAN_MODE_WRITE_TOOLS } from './constants.js';
+import { runTirithCheck, resolveTirithWarnAction, tirithEnabled, mergeTirithVerdict, type PlanSeverity } from './tirith.js';
 
 export function isPlanModeWriteTool(toolName: string): boolean {
 	const normalized = toolName.toLowerCase();
@@ -23,24 +25,52 @@ export function writeToolGuard(toolName: string): ToolGuardDecision | undefined 
 	};
 }
 
-export function shellPlanGuard(command: string, allowlist: CommandAllowlist = {}): ToolGuardDecision | undefined {
+/**
+ * Guard for bash commands in Plan Mode.
+ *
+ * Read-only allowlisted commands pass through. Everything else is blocked:
+ * - `destructive` severity hard-blocks (side effects, never confirmed).
+ * - `unknown` severity may be approved via the read-only inspection prompt.
+ *
+ * When tirith enrichment is enabled, blocked commands are additionally scanned
+ * by `tirith check --json`. Tirith is enrichment-only and can only strengthen:
+ * - block verdict, or warn verdict with warnAction `deny` → escalate to
+ *   `destructive` (no confirmation offered) and append findings to the reason.
+ * - warn verdict with warnAction `allow` → keep the caller's severity, append
+ *   findings to the reason so they reach the agent and the approval prompt.
+ * - clean/error → plan's own decision stands unchanged. A missing or erroring
+ *   tirith binary must not weaken the block.
+ *
+ * Allowlisted read-only commands skip tirith entirely (no overhead); tirith's
+ * command-structure analysis is most valuable on commands plan already blocks.
+ */
+export function shellPlanGuard(
+	command: string,
+	allowlist: CommandAllowlist = {},
+	tirith?: TirithConfig,
+): ToolGuardDecision | undefined {
 	if (isReadOnlyCommand(command, allowlist)) return undefined;
 
-	if (isDestructiveCommand(command)) {
-		return {
-			block: true,
-			severity: 'destructive',
-			reason: planInstructionGuard(
-				`Plan mode: this command has side effects and cannot run in Plan Mode.\nCommand: ${command}`,
-			),
-		};
+	const destructive = isDestructiveCommand(command);
+	const baseReason = destructive
+		? `Plan mode: this command has side effects and cannot run in Plan Mode.\nCommand: ${command}`
+		: `Plan mode: bash command is not in the read-only allowlist.\nCommand: ${command}`;
+	const severity: PlanSeverity = destructive ? 'destructive' : 'unknown';
+
+	if (!tirithEnabled(tirith)) {
+		return { block: true, severity, reason: planInstructionGuard(baseReason) };
 	}
 
-	return {
-		block: true,
-		severity: 'unknown',
-		reason: planInstructionGuard(
-			`Plan mode: bash command is not in the read-only allowlist.\nCommand: ${command}`,
-		),
-	};
+	const enriched = enrichWithTirith(baseReason, severity, command, tirith);
+	return { block: true, severity: enriched.severity, reason: planInstructionGuard(enriched.reason) };
+}
+
+function enrichWithTirith(
+	baseReason: string,
+	severity: PlanSeverity,
+	command: string,
+	config: TirithConfig,
+): { severity: PlanSeverity; reason: string } {
+	const verdict = runTirithCheck(command, config);
+	return mergeTirithVerdict(baseReason, severity, verdict, resolveTirithWarnAction(config));
 }

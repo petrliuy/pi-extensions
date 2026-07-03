@@ -600,7 +600,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 		const command = event.input.command as string;
 		const profile = getProfile(config, 'plan');
-		const shellDecision = shellPlanGuard(command, profile.planCommandAllow);
+		const shellDecision = shellPlanGuard(command, profile.planCommandAllow, config.tirith);
 		if (shellDecision) {
 			// Destructive commands are hard-rejected — no confirmation prompt.
 			if (shellDecision.severity === 'destructive' || !ctx.hasUI) {

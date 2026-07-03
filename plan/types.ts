@@ -44,6 +44,19 @@ export interface PhaseProfile {
 
 export interface PhaseProfilesConfig {
 	profiles?: Partial<Record<PhaseName, PhaseProfile>>;
+	/** Optional Tirith security enrichment for Plan Mode bash guards. */
+	tirith?: TirithConfig;
+}
+
+export interface TirithConfig {
+	/** Opt in to tirith enrichment. Default: disabled. */
+	enabled?: boolean;
+	/** Override the tirith binary path. Falls back to $TIRITH_BIN, then `tirith`. */
+	binary?: string;
+	/** execFileSync timeout in ms. Default: 10000. */
+	timeoutMs?: number;
+	/** Warn (tirith exit 2) handling. `allow` keeps the caller's severity; `deny` escalates to a hard block. Default: `allow`. */
+	warnAction?: 'allow' | 'deny';
 }
 
 export interface PlanProposalInput {

@@ -82,4 +82,10 @@ describe("shellPlanGuard", () => {
 		const allowlist = { prefixes: ["git stash"] };
 		expect(shellPlanGuard("git stash list", allowlist)).toBeUndefined();
 	});
+
+	it("does not enrich when tirith is disabled (default): same severity and no tirith note", () => {
+		const decision = shellPlanGuard("git push", {}, undefined);
+		expect(decision!.severity).toBe("destructive");
+		expect(decision!.reason).not.toContain("tirith");
+	});
 });
