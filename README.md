@@ -17,6 +17,7 @@ Official extension docs: https://pi.dev/docs/latest/extensions
 - `usage/` - Provider quota and balance queries for selected model providers.
 - `undo/` - Restore files changed by the last Pi edit/write tool turn.
 - `tooling/` - Always-on tool selection and git commit hygiene guidance that nudges agents toward `rg`, `fd`, `jq`, `yq`, `uvx`, `npx`, `httpie`, and Context7.
+- `ask-user-question/` - Structured `ask_user_question` tool (1–4 questions, 2–4 options each) for the Plan Mode clarification gate and general use. 精简 bilingual (zh/en) fork of `@juicesharp/rpiv-ask-user-question`, zero external deps.
 - `rtk.ts` - RTK transparent bash proxy that rewrites supported commands through `rtk rewrite` for compact output.
 
 ## Usage
