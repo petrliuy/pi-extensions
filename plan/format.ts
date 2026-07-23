@@ -61,6 +61,7 @@ export function normalizePlanProposal(params: PlanProposalInput): PlanProposal {
 		verification: normalizePlanList(params.verification, 'verification', false),
 		risks: normalizePlanList(params.risks, 'risks', false),
 		files: normalizePlanList(params.files, 'files', false),
+		references: normalizePlanList(params.references, 'references', false),
 	};
 }
 
@@ -94,7 +95,11 @@ export function formatPlanProposal(plan: PlanProposal): string {
 			? `\n\n**Risks**\n${plan.risks.map((risk, index) => `${index + 1}. ${risk}`).join('\n')}`
 			: '';
 	const files = plan.files.length > 0 ? `\n\n**Likely Files**\n${plan.files.join('\n')}` : '';
-	return `**${plan.title}**\n\n${plan.summary}\n\n**Plan Steps (${plan.steps.length})**\n${steps}${assumptions}${verification}${risks}${files}`;
+	const references =
+		plan.references.length > 0
+			? `\n\n**References**\n${plan.references.map((ref, index) => `${index + 1}. ${ref}`).join('\n')}`
+			: '';
+	return `**${plan.title}**\n\n${plan.summary}\n\n**Plan Steps (${plan.steps.length})**\n${steps}${assumptions}${verification}${risks}${files}${references}`;
 }
 
 export function formatApprovedPlanContext(plan: PlanProposal | undefined): string {
@@ -112,9 +117,11 @@ export function formatApprovedPlanContext(plan: PlanProposal | undefined): strin
 			? `\nRisks:\n${plan.risks.map((risk, index) => `${index + 1}. ${risk}`).join('\n')}`
 			: '';
 	const files = plan.files.length > 0 ? `\nFiles:\n${plan.files.map((file) => `- ${file}`).join('\n')}` : '';
+	const references =
+		plan.references.length > 0 ? `\nReferences:\n${plan.references.map((ref) => `- ${ref}`).join('\n')}` : '';
 	return `\n\nApproved plan context:
 Title: ${plan.title}
-Summary: ${plan.summary}${assumptions}${verification}${risks}${files}`;
+Summary: ${plan.summary}${assumptions}${verification}${risks}${files}${references}`;
 }
 
 export function formatEditablePlan(plan: PlanProposal): string {
@@ -136,6 +143,9 @@ export function formatEditablePlan(plan: PlanProposal): string {
 		'',
 		'Files:',
 		...plan.files.map((item) => `- ${item}`),
+		'',
+		'References:',
+		...plan.references.map((ref) => `- ${ref}`),
 	].join('\n');
 }
 
@@ -161,7 +171,7 @@ export function parseEditablePlan(text: string): PlanProposal {
 			if (field[1].toLowerCase() === 'summary') summary = field[2].trim();
 			continue;
 		}
-		const section = line.match(/^(Steps|Assumptions|Verification|Risks|Files):\s*$/i);
+		const section = line.match(/^(Steps|Assumptions|Verification|Risks|Files|References):\s*$/i);
 		if (section) {
 			current = section[1].toLowerCase();
 			sections.set(current, []);
@@ -183,5 +193,48 @@ export function parseEditablePlan(text: string): PlanProposal {
 		verification: parseEditableList(sections.get('verification') ?? []),
 		risks: parseEditableList(sections.get('risks') ?? []),
 		files: parseEditableList(sections.get('files') ?? []),
+		references: parseEditableList(sections.get('references') ?? []),
+	});
+}
+
+/**
+ * Normalize a single step label for fingerprint matching across plan revisions.
+ * Lowercases and collapses whitespace so reordered/re-added steps reuse the same id.
+ */
+export function fingerprintStep(text: string): string {
+	return text.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Replace the whole approved plan with a living-plan update (Codex `update_plan`).
+ *
+ * Existing task ids are reused by matching normalized step text, so the agent
+ * can add, remove, reorder, or split steps without losing stable ids. Brand-new
+ * step text gets the next available task-N id. Step numbers are resequenced to
+ * the new order.
+ */
+export function livingPlanFromUpdate(
+	current: TodoItem[],
+	incoming: Array<{ step: string; status: import('./types.js').TaskStatus }>,
+): TodoItem[] {
+	const byText = new Map<string, TodoItem>();
+	for (const todo of current) byText.set(fingerprintStep(todo.text), todo);
+	let nextId = current.reduce((max, todo) => {
+		const n = Number(todo.id.replace(/^task-/, ''));
+		return Number.isFinite(n) ? Math.max(max, n) : max;
+	}, 0);
+
+	return incoming.map((item, index) => {
+		const text = normalizePlanText(item.step, 'step');
+		const existing = byText.get(fingerprintStep(text));
+		const id = existing?.id ?? `task-${++nextId}`;
+		return {
+			id,
+			step: index + 1,
+			text,
+			completed: item.status === 'completed',
+			status: item.status,
+			source: 'plan' as const,
+		};
 	});
 }

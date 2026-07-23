@@ -9,6 +9,7 @@ const plan = {
 	verification: [],
 	risks: [],
 	files: [],
+	references: [],
 };
 
 describe("approval transitions", () => {

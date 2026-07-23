@@ -46,7 +46,7 @@ Workflow:
 3. Apply the Clarification Gate before proposing:
    - Ask the user when any material decision cannot be resolved from repository evidence.
    - Material decisions include scope, goal, success criteria, product intent, risk tolerance, execution strategy, architecture boundary, data/user impact, or rollout choice.
-   - Use the questionnaire tool when available. Provide 2-4 concrete options plus a "Custom / Other" option.
+   - Use the ask_user_question tool when available. Provide 2-4 concrete options (each a concise label plus a description of its trade-off) and set multiSelect: true when choices are not mutually exclusive. A free-text "Type something." row is appended automatically — do NOT author "Other" or "Type something." labels (reserved labels are rejected at runtime).
    - Do not replace unclear user intent with assumptions.
 4. Proceed without asking only when remaining uncertainty is low-risk, local, reversible, and supported by repository evidence. In propose_plan.assumptions, explain why clarification was not needed.
 

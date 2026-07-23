@@ -28,4 +28,25 @@ describe("plan state restore", () => {
 		expect(restored.mode).toBe("normal");
 		expect(restored.continuationCount).toBe(0);
 	});
+
+	it("restores pendingPlan references (defaults to empty array when absent)", () => {
+		const restored = restorePlanState({
+			schemaVersion: PLAN_STATE_SCHEMA_VERSION,
+			mode: "approval",
+			todos: [],
+			pendingPlan: {
+				title: "T",
+				summary: "S",
+				steps: ["a"],
+				assumptions: [],
+				verification: [],
+				risks: [],
+				files: ["x.py"],
+			},
+			continuationCount: 0,
+			noProgressContinuationCount: 0,
+		});
+		expect(restored.pendingPlan?.references).toEqual([]);
+		expect(restored.pendingPlan?.files).toEqual(["x.py"]);
+	});
 });

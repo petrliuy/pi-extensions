@@ -67,6 +67,8 @@ export interface PlanProposalInput {
 	verification?: string[];
 	risks?: string[];
 	files?: string[];
+	/** Optional reference projects, issues, or docs that informed the plan. Display only. */
+	references?: string[];
 }
 
 export interface PlanProposal {
@@ -77,6 +79,13 @@ export interface PlanProposal {
 	verification: string[];
 	risks: string[];
 	files: string[];
+	references: string[];
+}
+
+/** One step in a whole-plan (living plan) update, matching Codex `update_plan`. */
+export interface LivingPlanStep {
+	step: string;
+	status: TaskStatus;
 }
 
 export interface PlanRuntimeState {
@@ -106,9 +115,16 @@ export interface ToolGuardDecision {
 }
 
 export interface PlanTaskUpdateInput {
-	taskId: string;
-	status: TaskStatus;
+	/** Task id of a single task to update, e.g. task-1. Required when not using the `plan` field. */
+	taskId?: string;
+	/** New status for the single task identified by `taskId`. */
+	status?: TaskStatus;
+	/** Optional short progress or blocker note for a single-task update. */
 	message?: string;
+	/** Whole-plan replacement (living plan): full ordered step list with statuses. */
+	plan?: LivingPlanStep[];
+	/** Rationale for a whole-plan change (added/removed/reordered/split steps). */
+	explanation?: string;
 }
 
 export interface RuntimeSnapshot {

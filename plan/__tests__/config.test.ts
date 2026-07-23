@@ -10,7 +10,7 @@ describe("plan mode tools", () => {
 			"grep",
 			"find",
 			"ls",
-			"questionnaire",
+			"ask_user_question",
 			PLAN_PROPOSAL_TOOL,
 		]);
 	});

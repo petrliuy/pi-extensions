@@ -20,6 +20,7 @@ import type {
 	PlanProposalInput,
 	PlanRuntimeState,
 	PlanTaskUpdateInput,
+	TaskStatus,
 	TransitionAction,
 } from './types.js';
 import type { TodoItem } from './utils.js';
@@ -51,6 +52,7 @@ import {
 	formatApprovedPlanContext,
 	formatEditablePlan,
 	parseEditablePlan,
+	livingPlanFromUpdate,
 } from './format.js';
 
 /** Search/text-matching commands where exit code 1 means "no matches", not an error. */
@@ -421,12 +423,21 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	function updateTaskStatus(update: PlanTaskUpdateInput): TodoItem {
-		const taskId = normalizePlanText(update.taskId, 'taskId');
-		const status = update.status;
-		if (!['pending', 'in_progress', 'completed', 'blocked'].includes(status)) {
+	function assertTaskStatus(status: unknown): TaskStatus {
+		if (!['pending', 'in_progress', 'completed', 'blocked'].includes(status as string)) {
 			throw new Error('plan_task_update.status must be pending, in_progress, completed, or blocked.');
 		}
+		return status as TaskStatus;
+	}
+
+	function updateTaskStatus(update: PlanTaskUpdateInput): TodoItem {
+		if (update.taskId === undefined || update.status === undefined) {
+			throw new Error(
+				'plan_task_update requires either a whole-plan `plan` array or both `taskId` and `status`.',
+			);
+		}
+		const taskId = normalizePlanText(update.taskId, 'taskId');
+		const status = assertTaskStatus(update.status);
 
 		const task = state.todos.find((todo) => todo.id === taskId);
 		if (!task) {
@@ -495,31 +506,67 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		name: PLAN_TASK_UPDATE_TOOL,
 		label: 'Plan Task Update',
 		description:
-			'Update the status of one approved plan task during execution. Use this instead of prose-only progress markers.',
-		promptSnippet: 'Report approved plan task progress with task id and status.',
+			'Update the approved plan during execution: change one task status, or replace the whole plan (living plan) to add, remove, reorder, or split steps.',
+		promptSnippet: 'Report approved plan task progress or revise the step list mid-execution.',
 		promptGuidelines: [
 			'Call plan_task_update when starting, completing, or blocking an approved plan task.',
 			'Use task ids shown in the execution context, such as task-1.',
 			'If a task cannot continue, mark it blocked with a short message instead of silently stopping.',
+			'To add, remove, reorder, or split steps during execution, pass a full `plan` array (every step with a status) and an `explanation` of the change; existing task ids are reused by matching step text.',
+			'Keep at most one step in_progress at a time.',
 		],
 		parameters: PLAN_TASK_UPDATE_PARAMETERS,
 		async execute(_toolCallId, params: PlanTaskUpdateInput, _signal, _onUpdate, ctx) {
 			if (state.mode !== 'executing') {
 				throw new Error('plan_task_update can only be used while executing an approved plan.');
 			}
+			// Living plan: replace the whole approved plan with a revised step list.
+			if (Array.isArray(params.plan) && params.plan.length > 0) {
+				const incoming = params.plan.map((item) => ({
+					step: normalizePlanText(item.step, 'step'),
+					status: assertTaskStatus(item.status),
+				}));
+				state.todos = livingPlanFromUpdate(state.todos, incoming);
+				state.currentAgentProgressCount += 1;
+				state.noProgressContinuationCount = 0;
+				persistState();
+				updateStatus(ctx);
+				const total = state.todos.length;
+				const completed = state.todos.filter((t) => t.status === 'completed').length;
+				const inProgress = state.todos.filter((t) => t.status === 'in_progress').length;
+				const executionBlocked = state.todos.some((t) => t.status === 'blocked');
+				const allCompleted = total > 0 && completed === total;
+				const terminal = allCompleted || executionBlocked;
+				const reason = params.explanation?.trim() || 'steps reordered';
+				const hint = inProgress > 1 ? '\nNote: keep at most one step in_progress at a time.' : '';
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Plan updated: ${reason}. ${completed}/${total} done, ${inProgress} in progress.${hint}${terminal ? ' Ending the execution turn.' : ''}`,
+						},
+					],
+					details: { plan: incoming, explanation: params.explanation, todos: state.todos },
+					terminate: terminal,
+				};
+			}
+
+			// Single-task update.
 			const task = updateTaskStatus(params);
 			persistState();
 			updateStatus(ctx);
 			const allCompleted = state.todos.every((todo) => todo.status === 'completed');
 			const executionBlocked = state.todos.some((todo) => todo.status === 'blocked');
 			const terminal = allCompleted || executionBlocked;
+			const inProgress = state.todos.filter((t) => t.status === 'in_progress').length;
+			const hint = inProgress > 1 ? '\nNote: keep at most one step in_progress at a time.' : '';
 			return {
 				content: [
 					{
 						type: 'text',
 						text: terminal
 							? `Task ${task.id} marked ${task.status}. Ending the execution turn.`
-							: `Task ${task.id} marked ${task.status}.`,
+							: `Task ${task.id} marked ${task.status}.${hint}`,
 					},
 				],
 				details: { task },
@@ -721,6 +768,7 @@ MANDATORY: You MUST call plan_task_update to report progress for every task:
 
 	pi.on('agent_end', async (_event, ctx) => {
 		if (state.mode === 'approval') {
+			showPlanProposal(state.pendingPlan);
 			await promptForPlanExecution(ctx, state.pendingPlan);
 			return;
 		}

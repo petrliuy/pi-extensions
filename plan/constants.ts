@@ -5,7 +5,7 @@ export const PLAN_PROPOSAL_TOOL = 'propose_plan';
 export const PLAN_TASK_UPDATE_TOOL = 'plan_task_update';
 export const PLAN_STATE_SCHEMA_VERSION = 3;
 export const NORMAL_MODE_TOOLS = ['read', 'bash', 'edit', 'write'];
-export const PLAN_MODE_TOOLS = ['read', 'bash', 'grep', 'find', 'ls', 'questionnaire', PLAN_PROPOSAL_TOOL];
+export const PLAN_MODE_TOOLS = ['read', 'bash', 'grep', 'find', 'ls', 'ask_user_question', PLAN_PROPOSAL_TOOL];
 export const EXECUTE_MODE_TOOLS = [...NORMAL_MODE_TOOLS, PLAN_TASK_UPDATE_TOOL];
 export const PLAN_MODE_WRITE_TOOLS = new Set(['edit', 'write', 'apply_patch']);
 export const APPROVAL_CHOICES = ['Execute plan', 'Refine plan', 'Edit plan', 'Quit plan'] as const;
@@ -50,6 +50,11 @@ export const PLAN_PROPOSAL_PARAMETERS = {
 			items: { type: 'string' },
 			description: 'Optional likely touched files or modules for display only.',
 		},
+		references: {
+			type: 'array',
+			items: { type: 'string' },
+			description: 'Optional reference projects, issues, or docs that informed the plan. Display only.',
+		},
 	},
 	required: ['title', 'summary', 'steps'],
 	additionalProperties: false,
@@ -60,19 +65,40 @@ export const PLAN_TASK_UPDATE_PARAMETERS = {
 	properties: {
 		taskId: {
 			type: 'string',
-			description: 'Task id from the approved plan, e.g. task-1.',
+			description: 'Task id of a single approved plan task to update, e.g. task-1. Required when not using the `plan` field to replace the whole plan.',
 		},
 		status: {
 			type: 'string',
 			enum: ['pending', 'in_progress', 'completed', 'blocked'],
-			description: 'New task status.',
+			description: 'New status for the single task identified by `taskId`. Required when not using the `plan` field.',
 		},
 		message: {
 			type: 'string',
-			description: 'Optional short progress or blocker note.',
+			description: 'Optional short progress or blocker note for a single-task update.',
+		},
+		plan: {
+			type: 'array',
+			items: {
+				type: 'object',
+				properties: {
+					step: { type: 'string', description: 'Task step text.' },
+					status: {
+						type: 'string',
+						enum: ['pending', 'in_progress', 'completed', 'blocked'],
+						description: 'Step status.',
+					},
+				},
+				required: ['step', 'status'],
+				additionalProperties: false,
+			},
+			description: 'Optional whole-plan replacement (living plan): the full ordered step list with statuses. Use this to add, remove, reorder, or split steps during execution. Existing task ids are reused by matching step text. At most one step may be in_progress.',
+		},
+		explanation: {
+			type: 'string',
+			description: 'Short rationale for a whole-plan change (which steps were added/removed/reordered/split).',
 		},
 	},
-	required: ['taskId', 'status'],
+	required: [],
 	additionalProperties: false,
 } as const;
 

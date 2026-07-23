@@ -26,6 +26,7 @@ States: `normal | planning | approval | executing`
 - **Structured plan approval**: Renders the complete `propose_plan` result before opening the harness approval UI
 - **Proposal refinement**: Accepts additional context and asks the agent for one complete revised proposal without adding another runtime state
 - **Structured task progress**: Uses `plan_task_update` during execution as the canonical progress protocol
+- **Living plan**: During execution the agent may call `plan_task_update` with a full `plan` array (plus `explanation`) to add, remove, reorder, or split steps; existing task ids are reused by matching step text, so the approved plan adapts to reality without re-approval (mirrors Codex `update_plan`). At most one step should be `in_progress` at a time.
 - **Auto-continuation**: Continues approved execution while structured task progress is reported, with two no-progress retry turns and a safety limit
 - **Progress tracking**: Widget shows completion status during execution
 - **Session persistence**: Current-schema state survives session resume and branch navigation
@@ -63,7 +64,7 @@ If `plan.json` does not exist or a phase key is missing, the following defaults 
 
 | Phase    | Thinking   | Tools                                                       | Context                                            |
 |----------|------------|-------------------------------------------------------------|----------------------------------------------------|
-| `plan`   | `high`     | `read`, `bash`, `grep`, `find`, `ls`, `questionnaire`, `propose_plan` | Prompts strong reasoning, focus on analysis, no edits |
+| `plan`   | `high`     | `read`, `bash`, `grep`, `find`, `ls`, `ask_user_question`, `propose_plan` | Prompts strong reasoning, focus on analysis, no edits |
 | `execute`| `medium`   | `read`, `bash`, `edit`, `write`, `plan_task_update`          | Implementation-focused reasoning, minimal diffs    |
 | `normal` | Restored   | Restored from the pre-plan runtime snapshot                 | (none)                                             |
 
@@ -101,13 +102,13 @@ User-provided fields in `plan.json` are shallow-merged over these defaults. Only
 
 1. Enable plan mode with `/plan` or `--plan` flag
 2. Ask the agent to analyze code and create a plan
-3. For implementation, fix, refactor, or "execute/proceed/continue/apply changes" requests, the agent applies a clarification gate: ask for material user decisions that repo context cannot answer, then call `propose_plan` with `title`, `summary`, ordered `steps`, optional `assumptions`, optional `verification`, optional `risks`, and optional `files`. The `summary` should capture key code findings, constraints, and implementation judgment needed during execution.
+3. For implementation, fix, refactor, or "execute/proceed/continue/apply changes" requests, the agent applies a clarification gate: ask for material user decisions that repo context cannot answer, then call `propose_plan` with `title`, `summary`, ordered `steps`, optional `assumptions`, optional `verification`, optional `risks`, optional `files`, and optional `references` (reference projects/issues/docs used to inform the plan, display only). The `summary` should capture key code findings, constraints, and implementation judgment needed during execution.
 4. Review the complete proposal displayed directly in the TUI, then choose `Execute plan`, `Refine plan`, `Edit plan`, or `Quit plan`. `Refine plan` accepts additional context and requests a complete revised proposal. Execution starts automatically after approval; saving an edited plan also starts execution with the edited steps.
 5. During execution, the agent updates task state with `plan_task_update` (`pending`, `in_progress`, `completed`, or `blocked`).
 6. If more steps remain, Plan Mode automatically sends hidden continuation follow-ups. If a turn forgets to report task progress, Plan Mode retries twice with a stronger hidden reminder before marking execution blocked.
 7. The status bar shows completion count, and the progress widget shows only the current or next step.
 
-The complete proposal is returned as the visible `propose_plan` tool result. The approval selector opens at `agent_end`, after the tool result has rendered in the TUI. Restored approval sessions redisplay the proposal as a `[plan-proposal]` message before reopening the selector. After approval, execution context includes compact approved plan metadata plus remaining steps. `Refine plan` preserves the current proposal, sends the additional context through a hidden follow-up, and requires one complete revised `propose_plan` response. New context takes precedence where it conflicts with the current proposal. `Edit plan` directly replaces the pending plan and starts execution after successful validation. Invalid edits reopen the approval flow instead of executing. Confirming execution or saving an edited plan sends a hidden follow-up handoff turn so approval made from the UI starts reliably without adding protocol noise to the chat. Plain yes/no chat replies are not treated as approval. Plain chat requests such as `execute`, `proceed`, `continue`, `apply`, `执行`, `继续`, or `应用` while still in planning mean the agent should submit the complete current or revised proposal with `propose_plan`, not return a prose-only execution-step breakdown. Cancelling the refinement or edit dialog returns to approval; dismissing the approval selector returns to planning. Running `/plan` during execution clears the active execution state and exits Plan Mode.
+The complete proposal is returned as the visible `propose_plan` tool result and does not force-terminate the turn, so the agent can ask one clarifying `ask_user_question` follow-up or annotate the proposal in the same turn before yielding. The approval selector opens at `agent_end`, after the tool result has rendered in the TUI. Restored approval sessions redisplay the proposal as a `[plan-proposal]` message before reopening the selector. After approval, execution context includes compact approved plan metadata plus remaining steps. `Refine plan` preserves the current proposal, sends the additional context through a hidden follow-up, and requires one complete revised `propose_plan` response. New context takes precedence where it conflicts with the current proposal. `Edit plan` directly replaces the pending plan and starts execution after successful validation. Invalid edits reopen the approval flow instead of executing. Confirming execution or saving an edited plan sends a hidden follow-up handoff turn so approval made from the UI starts reliably without adding protocol noise to the chat. Plain yes/no chat replies are not treated as approval. Plain chat requests such as `execute`, `proceed`, `continue`, `apply`, `执行`, `继续`, or `应用` while still in planning mean the agent should submit the complete current or revised proposal with `propose_plan`, not return a prose-only execution-step breakdown. Cancelling the refinement or edit dialog returns to approval; dismissing the approval selector returns to planning. Running `/plan` during execution clears the active execution state and exits Plan Mode.
 
 ## How It Works
 
@@ -174,6 +175,7 @@ Plan phase filters `edit`, `write`, `apply_patch`, and namespaced variants from 
 - Pre-plan tool access restored, with `propose_plan` removed and `plan_task_update` added
 - Agent executes steps in order
 - `plan_task_update` tracks task state by stable task id
+- A single-task call updates one `taskId` to a new `status` (with optional `message`); a whole-plan call passes a full `plan` array of `{ step, status }` plus an `explanation` to add, remove, reorder, or split steps, reusing existing task ids by matching step text (living plan; at most one `in_progress` at a time)
 - Automatic continuation sends the next execution follow-up while steps remain and progress is being marked
 - No-progress turns get two automatic retries before Plan Mode marks execution blocked and clears the active state
 - Tasks marked `blocked` stop execution immediately and clear the active state

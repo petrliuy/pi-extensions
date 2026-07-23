@@ -46,6 +46,7 @@ export function normalizeStoredPlan(plan: PlanProposal | undefined): PlanProposa
 		verification: plan.verification ?? [],
 		risks: plan.risks ?? [],
 		files: plan.files ?? [],
+		references: plan.references ?? [],
 	};
 }
 
